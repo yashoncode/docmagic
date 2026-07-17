@@ -14,7 +14,7 @@ from openai import OpenAI
 from openpyxl import load_workbook
 from pypdf import PdfReader
 
-load_dotenv()
+load_dotenv(override=True)  # .env edits win on gradio hot-reload
 
 # root stays at WARNING so httpx/gradio chatter is hidden; only our logs show
 logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s")
@@ -116,11 +116,17 @@ def ingest(files: list[str]) -> str:
 
 def stream_llm(messages: list[dict]):
     """Stream a chat completion, yielding the accumulated text."""
+    extra = {}
+    if "nemotron" in LLM_MODEL:
+        # answer directly; set True to enable chain-of-thought (slower)
+        extra = {"chat_template_kwargs": {"enable_thinking": False}}
     stream = client.chat.completions.create(
-        model=LLM_MODEL, messages=messages, temperature=0.2, stream=True
+        model=LLM_MODEL, messages=messages, temperature=0.2, stream=True, extra_body=extra
     )
     text = ""
     for event in stream:
+        if not event.choices:  # NIM sends empty/usage chunks on some models
+            continue
         text += event.choices[0].delta.content or ""
         yield text
     log.info("LLM response <- %d chars: %s", len(text), text)
