@@ -415,7 +415,7 @@ def render_analysis(files, llm, model_id: str):
 
 
 def main():
-    icon = "assets/favicon.png" if os.path.exists("assets/favicon.png") else "✨"
+    icon = "assets/favicon.png" if os.path.exists("assets/favicon.png") else ":material/description:"
     st.set_page_config(
         page_title="DocMagic",
         page_icon=icon,
@@ -423,7 +423,7 @@ def main():
         menu_items={
             "Get help": None,
             "Report a bug": None,
-            "About": "✨ **DocMagic** — chat with your documents, powered by XEON AI.",
+            "About": "**DocMagic** — chat with your documents, powered by XEON AI.",
         },
     )
     st.session_state.setdefault("messages", [])
@@ -466,7 +466,7 @@ def main():
             "Enable analysis", help="Charts and data previews for uploaded Excel files"
         )
 
-    st.title("✨ DocMagic")
+    st.title("DocMagic")
     st.caption(
         "Chat with your documents, powered by XEON AI — answers cited to the exact file, page or sheet."
     )
