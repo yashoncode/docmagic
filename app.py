@@ -34,6 +34,8 @@ LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://integrate.api.nvidia.com/v1")
 LLM_API_KEY = os.getenv("LLM_API_KEY") or "missing-key-see-.env.example"
 LLM_MODEL = os.getenv("LLM_MODEL", "meta/llama-3.1-8b-instruct")
 EMBED_API_KEY = os.getenv("EMBED_API_KEY") or LLM_API_KEY
+# embeddings keep their own endpoint so switching LLM provider can't break them
+EMBED_BASE_URL = os.getenv("EMBED_BASE_URL", "https://integrate.api.nvidia.com/v1")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "nvidia/nemotron-3-embed-1b")
 
 CHUNK_CHARS = 1500  # splitter counts characters; ~250 words
@@ -82,18 +84,16 @@ SUMMARY_PROMPT = ChatPromptTemplate.from_messages(
 @st.cache_resource
 def resources():
     """LLM + vector store, created once per server instead of on every rerun."""
-    extra = {"chat_template_kwargs": {"enable_thinking": False}} if "nemotron" in LLM_MODEL else None
-    llm = ChatOpenAI(
-        base_url=LLM_BASE_URL,
-        api_key=LLM_API_KEY,
-        model=LLM_MODEL,
-        temperature=0.2,
-        extra_body=extra,
-    )
+    kwargs = {}
+    if "nemotron" in LLM_MODEL:
+        kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
+    if "kimi" not in LLM_MODEL:
+        kwargs["temperature"] = 0.2  # kimi-k3 fixes temperature=1.0 and rejects overrides
+    llm = ChatOpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY, model=LLM_MODEL, **kwargs)
     # embed_documents() sends input_type=passage, embed_query() sends query —
     # the asymmetry we handled by hand in master's embed()
     embeddings = NVIDIAEmbeddings(
-        base_url=LLM_BASE_URL, model=EMBED_MODEL, api_key=EMBED_API_KEY, truncate="END"
+        base_url=EMBED_BASE_URL, model=EMBED_MODEL, api_key=EMBED_API_KEY, truncate="END"
     )
     vectorstore = Chroma(
         collection_name="docs", embedding_function=embeddings, persist_directory="chroma_db"
