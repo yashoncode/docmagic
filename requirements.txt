@@ -1,5 +1,6 @@
 gradio
 chromadb
 pypdf
+openpyxl
 openai
 python-dotenv

@@ -1,4 +1,4 @@
-# Fine-tuning LogiChat's model (free, on Google Colab)
+# Fine-tuning DocMagic's model (free, on Google Colab)
 
 Phase 2 of this project: fine-tune **Llama 3.2 3B** on logistics/ERP/CRM Q&A
 so the model speaks your domain natively, then publish it on Hugging Face Hub.
@@ -25,7 +25,7 @@ before/after eval numbers.
    ```
 4. **Evaluate**: hold out 30 pairs, compare base vs fine-tuned answers.
    Record the numbers — they go in the model card and your resume.
-5. **Publish**: `model.push_to_hub("your-hf-username/logichat-llama-3.2-3b")`
+5. **Publish**: `model.push_to_hub("your-hf-username/docmagic-llama-3.2-3b")`
    with a model card describing data, method, and eval results.
 6. **Use it in the app**: point `LLM_BASE_URL`/`LLM_MODEL` in `.env` at your
    model served via Ollama locally (`ollama create` from the exported GGUF)

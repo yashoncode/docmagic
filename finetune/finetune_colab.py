@@ -40,6 +40,6 @@ trainer = SFTTrainer(
 )
 trainer.train()
 
-model.save_pretrained("logichat-lora")
-# To publish: model.push_to_hub("YOUR_HF_USERNAME/logichat-llama-3.2-3b", token="hf_...")
-# To run locally via Ollama: model.save_pretrained_gguf("logichat-gguf", tokenizer)
+model.save_pretrained("docmagic-lora")
+# To publish: model.push_to_hub("YOUR_HF_USERNAME/docmagic-llama-3.2-3b", token="hf_...")
+# To run locally via Ollama: model.save_pretrained_gguf("docmagic-gguf", tokenizer)

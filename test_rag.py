@@ -1,8 +1,12 @@
 """Smallest check that fails if chunking or retrieval breaks. No API key needed."""
 
-import chromadb
+import os
+import tempfile
 
-from app import chunk_text
+import chromadb
+from openpyxl import Workbook
+
+from app import chunk_text, extract_units
 
 
 def test_chunking():
@@ -29,7 +33,23 @@ def test_retrieval_roundtrip():
     assert res["metadatas"][0][0]["source"] == "rates.pdf"
 
 
+def test_excel_extraction():
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Rates"
+    ws.append(["City", "Rate"])
+    ws.append(["Chennai", 12])
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as f:
+        path = f.name
+    wb.save(path)
+    try:
+        assert list(extract_units(path)) == [("Rates", "City | Rate\nChennai | 12")]
+    finally:
+        os.remove(path)
+
+
 if __name__ == "__main__":
     test_chunking()
     test_retrieval_roundtrip()
+    test_excel_extraction()
     print("ok")
