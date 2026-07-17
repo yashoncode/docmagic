@@ -31,6 +31,8 @@ python -m venv .venv
 pip install -r requirements.txt
 copy .env.example .env          # then paste your free key from build.nvidia.com
 python kb_ingest.py             # optional, once: seed logistics basics (Wikipedia)
+                                # run while the app is STOPPED (embedded Chroma
+                                # is single-process; restart the app after)
 streamlit run app.py
 ```
 
