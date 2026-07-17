@@ -40,6 +40,5 @@ python test_rag.py
 ## Roadmap
 
 - [x] RAG over domain PDFs with page-level citations
-- [ ] Fine-tuned domain model (Llama 3.2 3B + QLoRA on logistics Q&A) — see [finetune/](finetune/)
-- [ ] Eval harness: base model vs fine-tuned, retrieval hit-rate
-- [ ] Deploy demo on Hugging Face Spaces
+- [ ] Reranking for higher retrieval precision
+- [ ] Hybrid keyword + vector search
