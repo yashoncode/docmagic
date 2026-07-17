@@ -17,7 +17,7 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.runnables import RunnablePassthrough
+from langchain_core.runnables import RunnableLambda, RunnableParallel, RunnablePassthrough
 from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
 from langchain_openai import ChatOpenAI
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -39,6 +39,7 @@ EMBED_MODEL = os.getenv("EMBED_MODEL", "nvidia/nemotron-3-embed-1b")
 CHUNK_CHARS = 1500  # splitter counts characters; ~250 words
 CHUNK_OVERLAP = 300  # ~50 words
 TOP_K = 5
+KB_TOP_K = 3  # extra chunks from the built-in logistics knowledge base (kb_ingest.py)
 MAX_FILES = 2
 SUMMARY_WORDS = 1500  # per file; keeps the summary prompt small and cheap
 
@@ -47,6 +48,9 @@ SYSTEM_PROMPT = (
     "documents (SOPs, rate cards, contracts, manuals). Answer ONLY from the "
     "provided context. Cite the source like [file.pdf p.3] or [file.xlsx Rates] "
     "(sheet name for spreadsheets). "
+    "The context may include general reference material labeled [Wikipedia ...]; "
+    "prefer the user's documents for specifics and use the reference only for "
+    "definitions and industry basics. "
     "If the context does not contain the answer, say so plainly."
 )
 
@@ -94,7 +98,11 @@ def resources():
     vectorstore = Chroma(
         collection_name="docs", embedding_function=embeddings, persist_directory="chroma_db"
     )
-    return llm, vectorstore
+    # persistent logistics-basics collection; survives the per-Analyse wipe of "docs"
+    kb_store = Chroma(  # chroma requires names >= 3 chars, so not "kb"
+        collection_name="basics", embedding_function=embeddings, persist_directory="chroma_db"
+    )
+    return llm, vectorstore, kb_store
 
 
 def load_units(path: str) -> list[Document]:
@@ -156,14 +164,21 @@ def summary_stream(paths: list[str], llm):
     yield from chain.stream({"excerpts": "\n\n".join(excerpts)})
 
 
-def answer_stream(question: str, history: list[dict], llm, vectorstore: Chroma):
-    """Yield answer tokens from the LCEL chain: retrieve -> prompt -> llm."""
-    if not vectorstore.get(limit=1)["ids"]:
+def answer_stream(question: str, history: list[dict], llm, vectorstore: Chroma, kb_store: Chroma):
+    """Yield answer tokens from the LCEL chain: retrieve (docs + kb) -> prompt -> llm."""
+    retrievers = {}
+    if vectorstore.get(limit=1)["ids"]:
+        retrievers["docs"] = vectorstore.as_retriever(search_kwargs={"k": TOP_K})
+    if kb_store.get(limit=1)["ids"]:
+        retrievers["kb"] = kb_store.as_retriever(search_kwargs={"k": KB_TOP_K})
+    if not retrievers:
         yield "No documents indexed yet — upload files and click Submit & Analyse first."
         return
-    retriever = vectorstore.as_retriever(search_kwargs={"k": TOP_K})
+    merge = RunnableLambda(lambda hits: format_docs([d for v in hits.values() for d in v]))
     chain = (
-        RunnablePassthrough.assign(context=itemgetter("question") | retriever | format_docs)
+        RunnablePassthrough.assign(
+            context=itemgetter("question") | RunnableParallel(retrievers) | merge
+        )
         | ANSWER_PROMPT
         | llm
         | StrOutputParser()
@@ -174,7 +189,7 @@ def answer_stream(question: str, history: list[dict], llm, vectorstore: Chroma):
 
 def main():
     st.set_page_config(page_title="DocMagic", page_icon="✨")
-    llm, vectorstore = resources()
+    llm, vectorstore, kb_store = resources()
 
     st.title("✨ DocMagic")
     st.caption("Chat with your Docs (supports PDFs and Excel)")
@@ -216,7 +231,7 @@ def main():
         st.chat_message("user").markdown(question)
         history = st.session_state.get("messages", [])
         with st.chat_message("assistant"):
-            text = st.write_stream(answer_stream(question, history, llm, vectorstore))
+            text = st.write_stream(answer_stream(question, history, llm, vectorstore, kb_store))
         st.session_state.setdefault("messages", []).extend(
             [{"role": "user", "content": question}, {"role": "assistant", "content": text}]
         )

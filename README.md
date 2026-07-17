@@ -30,8 +30,13 @@ python -m venv .venv
 .venv\Scripts\activate          # Windows  (Linux/Mac: source .venv/bin/activate)
 pip install -r requirements.txt
 copy .env.example .env          # then paste your free key from build.nvidia.com
+python kb_ingest.py             # optional, once: seed logistics basics (Wikipedia)
 streamlit run app.py
 ```
+
+The knowledge base lives in its own Chroma collection (`kb`), so chat can
+answer industry-basics questions (cited as `[Wikipedia <topic>]`) alongside
+top-5 chunks from your uploaded files — which always take priority.
 
 Upload PDFs or Excel files (.xlsx), click **Ingest**, ask away.
 

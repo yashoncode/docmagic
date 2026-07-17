@@ -7,3 +7,4 @@ langchain-nvidia-ai-endpoints
 pypdf
 openpyxl
 python-dotenv
+requests
