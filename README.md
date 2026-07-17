@@ -1,59 +1,108 @@
-# DocMagic ✨ — chat with your Docs (supports PDFs and Excel)
+# ✨ DocMagic
 
-Ask questions about SOPs, rate cards, contracts and warehouse manuals in plain
-language and get answers **cited to the exact file and page**.
+> Grounded, cited question-answering over your logistics, ERP and CRM documents.
 
-**This branch (`langchain`)** is the same app rebuilt on LangChain with a
-Streamlit frontend, so the implementations can be compared line by line.
+![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)
+![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?logo=streamlit&logoColor=white)
+![LangChain](https://img.shields.io/badge/LangChain-1C3C3C?logo=langchain&logoColor=white)
+![Chroma](https://img.shields.io/badge/Chroma-vector%20store-6C4BF6)
+![License](https://img.shields.io/badge/License-MIT-green)
 
-## Branches
+DocMagic is a retrieval-augmented document assistant for supply-chain and
+operations teams. Upload SOPs, rate cards, contracts or inventory exports and
+ask questions in plain language — every answer is grounded in your files and
+cited to the exact page or sheet. A built-in logistics knowledge base covers
+industry fundamentals, and an analysis mode turns spreadsheets into charts on
+request.
 
-| branch | RAG pipeline | UI |
-|--------|--------------|-----|
-| `master` | from scratch (no framework) | Gradio |
-| `langchain` | LangChain (loaders, splitter, LCEL chain) | Streamlit |
+## Demo
+
+**Live app:** _deploy on Streamlit Community Cloud and drop the URL here_
+
+<!-- Add a screenshot once deployed:  ![DocMagic](docs/screenshot.png) -->
+
+## Features
+
+- **Cited answers** — responses quote the exact source, e.g. `[rate_card.xlsx Rates]` or `[sop.pdf p.3]`, and the model answers only from retrieved context.
+- **PDF and Excel ingestion** — page-level parsing for PDFs, sheet-level for spreadsheets, with automatic detection of header rows buried under title/metadata blocks.
+- **Built-in domain knowledge** — a curated logistics/ERP/CRM knowledge base answers industry-fundamentals questions even before any file is uploaded.
+- **Conversational analytics** — describe a chart in natural language ("pie of shipments by status") and DocMagic renders it; bar, line, area, scatter and pie are supported.
+- **Live document preview** — uploaded PDFs render side-by-side with the chat.
+- **Session isolation** — each visitor's uploaded documents are private to their session.
+- **Provider-agnostic** — runs on any OpenAI-compatible endpoint; the chat model is selectable at runtime and the API key can be supplied by the operator or pasted per user.
+- **Production hardening** — runtime secrets, upload limits, session-scoped storage, sanitised error handling with server-side logging, and no third-party telemetry.
 
 ## Architecture
 
 ```
-PDFs (PyPDFLoader) / Excel (custom loader) -> Documents per page/sheet
-     -> RecursiveCharacterTextSplitter (1500 chars, 300 overlap)
-     -> Chroma vector store (local, persistent; NVIDIAEmbeddings nemotron-3-embed-1b)
-     -> LCEL chain: retriever | prompt | LLM  (NVIDIA NIM free API)
-     -> streamed answer with [file.pdf p.N] citations
+Ingestion
+  PDF / Excel ──▶ per-page / per-sheet documents ──▶ recursive text splitter
+            ──▶ NVIDIA nemotron embeddings ──▶ Chroma (per-session collection)
+
+Query
+  Question ──▶ embed ──▶ retrieve top-k from { session documents + knowledge base }
+           ──▶ LCEL chain (context + history ─▶ prompt ─▶ LLM)
+           ──▶ streamed answer with citations
 ```
 
-## Run it
+## Tech stack
+
+| Layer | Technology |
+|-------|-----------|
+| UI | Streamlit |
+| Orchestration | LangChain (LCEL) |
+| Vector store | Chroma (local, persistent) |
+| Embeddings | NVIDIA NIM — `nemotron-3-embed-1b` |
+| LLM | NVIDIA NIM — `nemotron-3-super` (default); any OpenAI-compatible model |
+| Data & charts | pandas, Vega/Altair |
+
+## Getting started
+
+**Prerequisites:** Python 3.10+ and a free NVIDIA NIM API key ([build.nvidia.com](https://build.nvidia.com)).
 
 ```bash
 python -m venv .venv
-.venv\Scripts\activate          # Windows  (Linux/Mac: source .venv/bin/activate)
+.venv\Scripts\activate          # Windows  (macOS/Linux: source .venv/bin/activate)
 pip install -r requirements.txt
-copy .env.example .env          # then paste your free key from build.nvidia.com
-python kb_ingest.py             # optional, once: seed logistics basics (Wikipedia)
-                                # run while the app is STOPPED (embedded Chroma
-                                # is single-process; restart the app after)
+copy .env.example .env          # add your API key
 streamlit run app.py
 ```
 
-No `.env`? The sidebar accepts a pasted NVIDIA API key at runtime, plus model
-choice and an analysis toggle (auto-charts for uploaded Excel files).
+The knowledge base builds on demand from the sidebar (**Load industry
+knowledge**), or ahead of time with `python kb_ingest.py` while the app is
+stopped.
 
-## Deploy (Streamlit Community Cloud)
+## Configuration
 
-1. Push this branch and create the app at share.streamlit.io pointing to `app.py`.
-2. Optionally set `LLM_API_KEY` (and `EMBED_API_KEY`) in the app's **Secrets** —
-   otherwise each visitor pastes their own key in the sidebar.
-3. Cloud storage is ephemeral: use the sidebar's **Seed logistics basics** button
-   after deploy to build the knowledge base (it re-seeds after restarts).
+Set these in `.env`, or supply the key in the sidebar / Streamlit Secrets at runtime.
 
-The knowledge base lives in its own Chroma collection (`kb`), so chat can
-answer industry-basics questions (cited as `[Wikipedia <topic>]`) alongside
-top-5 chunks from your uploaded files — which always take priority.
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `LLM_API_KEY` | API key for chat completions | _required_ |
+| `LLM_BASE_URL` | OpenAI-compatible chat endpoint | `https://integrate.api.nvidia.com/v1` |
+| `LLM_MODEL` | Chat model id | `nvidia/nemotron-3-super-120b-a12b` |
+| `EMBED_API_KEY` | API key for embeddings | falls back to `LLM_API_KEY` |
+| `EMBED_BASE_URL` | Embeddings endpoint | `https://integrate.api.nvidia.com/v1` |
+| `EMBED_MODEL` | Embedding model id | `nvidia/nemotron-3-embed-1b` |
 
-Upload PDFs or Excel files (.xlsx), click **Ingest**, ask away.
+## Deployment
 
-## Tests
+Deploy on [Streamlit Community Cloud](https://share.streamlit.io): point it at
+`app.py`, and either set `LLM_API_KEY` in the app's **Secrets** or let each
+visitor paste their own key. Storage on the free tier is ephemeral — rebuild
+the knowledge base after a restart with the sidebar button.
+
+## Project structure
+
+```
+app.py                  # Streamlit app: UI, RAG pipeline, analytics
+kb_ingest.py            # Builds the logistics knowledge base
+test_rag.py             # Unit tests: chunking, retrieval, Excel parsing
+.streamlit/config.toml  # Theme and server configuration
+finetune/               # Domain fine-tuning kit (Llama 3.2 3B + QLoRA)
+```
+
+## Testing
 
 ```bash
 python test_rag.py
@@ -61,7 +110,10 @@ python test_rag.py
 
 ## Roadmap
 
-- [x] RAG over domain PDFs with page-level citations
-- [ ] Fine-tuned domain model (Llama 3.2 3B + QLoRA on logistics Q&A) — see [finetune/](finetune/)
-- [ ] Eval harness: base model vs fine-tuned, retrieval hit-rate
-- [ ] Deploy demo on Hugging Face Spaces
+- Reranking for higher retrieval precision
+- Hybrid keyword + vector search
+- Domain-tuned model (see [`finetune/`](finetune/))
+
+## License
+
+Released under the [MIT License](LICENSE).
