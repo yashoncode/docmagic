@@ -36,6 +36,17 @@ python kb_ingest.py             # optional, once: seed logistics basics (Wikiped
 streamlit run app.py
 ```
 
+No `.env`? The sidebar accepts a pasted NVIDIA API key at runtime, plus model
+choice and an analysis toggle (auto-charts for uploaded Excel files).
+
+## Deploy (Streamlit Community Cloud)
+
+1. Push this branch and create the app at share.streamlit.io pointing to `app.py`.
+2. Optionally set `LLM_API_KEY` (and `EMBED_API_KEY`) in the app's **Secrets** —
+   otherwise each visitor pastes their own key in the sidebar.
+3. Cloud storage is ephemeral: use the sidebar's **Seed logistics basics** button
+   after deploy to build the knowledge base (it re-seeds after restarts).
+
 The knowledge base lives in its own Chroma collection (`kb`), so chat can
 answer industry-basics questions (cited as `[Wikipedia <topic>]`) alongside
 top-5 chunks from your uploaded files — which always take priority.

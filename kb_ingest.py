@@ -10,8 +10,6 @@ import time
 import requests
 from langchain_core.documents import Document
 
-from app import resources, splitter
-
 ARTICLES = [
     "Logistics",
     "Supply chain management",
@@ -61,7 +59,9 @@ def fetch(title: str, attempts: int = 3) -> str:
 
 
 def main():
-    _, _, kb_store = resources()
+    from app import default_resources, splitter  # here so app can import fetch/ARTICLES
+
+    _, _, kb_store = default_resources()
     kb_store.reset_collection()  # re-running refreshes instead of duplicating
     docs = []
     for title in ARTICLES:
