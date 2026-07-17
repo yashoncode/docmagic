@@ -244,10 +244,62 @@ def answer_stream(question: str, history: list[dict], llm, vectorstore: Chroma, 
     yield from chain.stream({"question": question, "history": history})
 
 
+def _detect_header(raw: pd.DataFrame) -> int:
+    """Real tables often sit below a title/metadata block; find the densest text row.
+
+    Scores the first 20 rows on fill ratio, text share, and how filled the next
+    rows are — the header of the actual table wins over 'Client: …' metadata lines.
+    """
+    best, best_score = 0, -1.0
+    width = max(raw.shape[1], 1)
+    for i in range(min(len(raw), 20)):
+        row = raw.iloc[i]
+        filled = int(row.notna().sum())
+        if filled < 2:
+            continue
+        texty = sum(isinstance(v, str) for v in row) / filled
+        below = raw.iloc[i + 1 : i + 4]
+        below_filled = float(below.notna().to_numpy().mean()) if len(below) else 0.0
+        score = filled / width + texty + below_filled
+        if score > best_score:
+            best, best_score = i, score
+    return best
+
+
+def _coerce_types(col: pd.Series) -> pd.Series:
+    """Columns are object dtype after re-heading; restore numbers and dates."""
+    if not col.notna().any():
+        return col
+    threshold = col.notna().sum() * 0.8
+    nums = pd.to_numeric(col, errors="coerce")
+    if nums.notna().sum() >= threshold:
+        return nums
+    from datetime import date, datetime
+
+    if col.map(lambda v: isinstance(v, (datetime, date, pd.Timestamp))).sum() >= threshold:
+        return pd.to_datetime(col, errors="coerce")
+    return col
+
+
 @st.cache_data(max_entries=8)
 def excel_frames(data: bytes) -> dict[str, pd.DataFrame]:
-    """All sheets of an uploaded workbook as DataFrames, keyed by sheet name."""
-    return pd.read_excel(io.BytesIO(data), sheet_name=None)
+    """All sheets of an uploaded workbook as DataFrames, headers auto-detected."""
+    out = {}
+    for name, raw in pd.read_excel(io.BytesIO(data), sheet_name=None, header=None).items():
+        raw = raw.dropna(how="all").dropna(axis=1, how="all").reset_index(drop=True)
+        if raw.empty:
+            out[name] = raw
+            continue
+        h = _detect_header(raw)
+        cols, seen = [], {}
+        for j, v in enumerate(raw.iloc[h]):
+            c = str(v).strip() if pd.notna(v) else f"column {j + 1}"
+            seen[c] = seen.get(c, 0) + 1
+            cols.append(c if seen[c] == 1 else f"{c} ({seen[c]})")
+        df = raw.iloc[h + 1 :].reset_index(drop=True).dropna(how="all")
+        df.columns = cols
+        out[name] = df.apply(_coerce_types)
+    return out
 
 
 def sheet_chart(df: pd.DataFrame):

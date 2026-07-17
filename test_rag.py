@@ -56,8 +56,33 @@ def test_excel_loader():
         os.remove(path)
 
 
+def test_header_detection():
+    # mimic a real ERP export: title/metadata block, blank row, then the table
+    from app import excel_frames
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["Inventory Report", "As on: 12 June, 26"])
+    ws.append(["Client", "BP Oil Mills Ltd."])
+    ws.append(["Contract", "#1251"])
+    ws.append([])
+    ws.append(["Item", "Qty", "Rate"])
+    ws.append(["Oil drum", 40, 1200])
+    ws.append(["Pallet", 15, 300])
+    import io
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    frames = excel_frames(buf.getvalue())
+    df = next(iter(frames.values()))
+    assert list(df.columns) == ["Item", "Qty", "Rate"]
+    assert len(df) == 2
+    assert df["Qty"].sum() == 55  # numeric dtype restored
+
+
 if __name__ == "__main__":
     test_splitting()
     test_retrieval_roundtrip()
     test_excel_loader()
+    test_header_detection()
     print("ok")
