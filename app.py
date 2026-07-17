@@ -418,6 +418,7 @@ def main():
     st.set_page_config(
         page_title="DocMagic",
         page_icon="✨",
+        layout="wide",
         menu_items={
             "Get help": None,
             "Report a bug": None,
@@ -459,7 +460,9 @@ def main():
         )
 
     st.title("✨ DocMagic")
-    st.caption("Chat with your documents, powered by XEON AI — answers cited to the exact file, page or sheet.")
+    st.caption(
+        "Chat with your documents, powered by XEON AI — answers cited to the exact file, page or sheet."
+    )
 
     llm_key = pasted or secret("LLM_API_KEY")
     if not llm_key:
@@ -469,13 +472,102 @@ def main():
     llm, embeddings, kb_store = resources(llm_key, base_url, model, embed_key)
     vectorstore = docs_store(embeddings)
 
-    # back to the sidebar for status + one-click knowledge setup (needs resources)
+    # side-by-side layout when a PDF is uploaded: chat on the left, live preview on the right
+    pdfs = [f for f in (files or []) if f.name.lower().endswith(".pdf")]
+    main_col, preview_col = st.columns([3, 2], gap="large") if pdfs else (st.container(), None)
+
+    with main_col:
+        if analyse:
+            if not files:
+                st.warning("Upload at least one file first.")
+            elif len(files) > MAX_FILES:
+                st.warning(f"Please upload at most {MAX_FILES} files at a time.")
+            else:
+                try:
+                    # uploads are in-memory; loaders want paths, so spill to a temp dir
+                    with tempfile.TemporaryDirectory() as td:
+                        paths = []
+                        for f in files:
+                            p = os.path.join(td, f.name)
+                            with open(p, "wb") as out:
+                                out.write(f.getbuffer())
+                            paths.append(p)
+                        with st.spinner("Reading your documents…"):
+                            # each Submit & analyse starts fresh so chat only covers current files
+                            vectorstore.reset_collection()
+                            n = ingest(paths, vectorstore)
+                        st.session_state.messages = []  # old chat referred to old docs
+                        if n == 0:
+                            st.session_state.summary = ""
+                            st.warning(
+                                "I couldn't find readable text in those files — a scanned or "
+                                "image-only PDF has no text layer to read.",
+                                icon=":material/document_scanner:",
+                            )
+                        else:
+                            st.toast("Documents ready", icon=":material/check_circle:")
+                            with st.expander(
+                                "Document summary", icon=":material/description:", expanded=True
+                            ):
+                                st.session_state.summary = st.write_stream(summary_stream(paths, llm))
+                except Exception:
+                    log.exception("analyse failed")
+                    st.error(
+                        "Couldn't read those documents — check the files and try again.",
+                        icon=":material/error:",
+                    )
+        elif st.session_state.summary:
+            with st.expander("Document summary", icon=":material/description:"):
+                st.markdown(st.session_state.summary)
+
+        if analysis_on and files:
+            render_analysis(files, llm, model)
+
+        for m in st.session_state.messages:
+            st.chat_message(m["role"]).markdown(m["content"])
+
+        question = None
+        if not st.session_state.messages:
+            picked = st.pills("Try asking", list(SUGGESTIONS), label_visibility="collapsed")
+            if picked:
+                question = SUGGESTIONS[picked]
+
+    if preview_col is not None:
+        with preview_col:
+            st.subheader(":material/picture_as_pdf: Document preview")
+            choice = pdfs[0]
+            if len(pdfs) > 1:
+                name = st.selectbox("File", [f.name for f in pdfs], label_visibility="collapsed")
+                choice = next(f for f in pdfs if f.name == name)
+            st.pdf(choice.getvalue(), height=640)
+
+    prompt = st.chat_input("Ask about your documents", submit_mode="disable")
+    question = prompt or question
+
+    if question:
+        with main_col:
+            st.chat_message("user").markdown(question)
+            try:
+                with st.chat_message("assistant"):
+                    text = st.write_stream(
+                        answer_stream(question, st.session_state.messages, llm, vectorstore, kb_store)
+                    )
+            except Exception:  # rate limits & co: tell the user, keep history clean
+                log.exception("answer failed")
+                st.error(
+                    "Sorry, I hit a snag answering that — please try again.", icon=":material/error:"
+                )
+            else:
+                st.session_state.messages.extend(
+                    [{"role": "user", "content": question}, {"role": "assistant", "content": text}]
+                )
+
+    # sidebar status LAST, so counts reflect this run's ingest instead of the pre-ingest state
     with st.sidebar:
         kb_n = kb_store._collection.count()
         docs_ready = "ready" if vectorstore._collection.count() else "none yet"
         st.caption(
-            f"Your documents: {docs_ready} · "
-            f"Industry knowledge: {'ready' if kb_n else 'not loaded'}"
+            f"Your documents: {docs_ready} · Industry knowledge: {'ready' if kb_n else 'not loaded'}"
         )
         if kb_n == 0 and st.button(
             "Load industry knowledge",
@@ -505,68 +597,6 @@ def main():
                 st.error("Couldn't load industry knowledge — please try again.", icon=":material/error:")
             else:
                 st.rerun()
-
-    if analyse:
-        if not files:
-            st.warning("Upload at least one file first.")
-        elif len(files) > MAX_FILES:
-            st.warning(f"Please upload at most {MAX_FILES} files at a time.")
-        else:
-            # uploads are in-memory; loaders want paths, so spill to a temp dir
-            try:
-                with tempfile.TemporaryDirectory() as td:
-                    paths = []
-                    for f in files:
-                        p = os.path.join(td, f.name)
-                        with open(p, "wb") as out:
-                            out.write(f.getbuffer())
-                        paths.append(p)
-                    with st.spinner("Reading your documents…"):
-                        # each Submit & analyse starts fresh so chat only covers current files
-                        vectorstore.reset_collection()
-                        ingest(paths, vectorstore)
-                    st.session_state.messages = []  # old chat referred to old docs
-                    st.toast("Documents ready", icon=":material/check_circle:")
-                    with st.expander("Document summary", icon=":material/description:", expanded=True):
-                        st.session_state.summary = st.write_stream(summary_stream(paths, llm))
-            except Exception:
-                log.exception("analyse failed")
-                st.error(
-                    "Couldn't read those documents — check the files and try again.",
-                    icon=":material/error:",
-                )
-    elif st.session_state.summary:
-        with st.expander("Document summary", icon=":material/description:"):
-            st.markdown(st.session_state.summary)
-
-    if analysis_on and files:
-        render_analysis(files, llm, model)
-
-    for m in st.session_state.messages:
-        st.chat_message(m["role"]).markdown(m["content"])
-
-    question = None
-    if not st.session_state.messages:
-        picked = st.pills("Try asking", list(SUGGESTIONS), label_visibility="collapsed")
-        if picked:
-            question = SUGGESTIONS[picked]
-    prompt = st.chat_input("Ask about your documents", submit_mode="disable")
-    question = prompt or question
-
-    if question:
-        st.chat_message("user").markdown(question)
-        try:
-            with st.chat_message("assistant"):
-                text = st.write_stream(
-                    answer_stream(question, st.session_state.messages, llm, vectorstore, kb_store)
-                )
-        except Exception:  # rate limits & co: tell the user, keep history clean
-            log.exception("answer failed")
-            st.error("Sorry, I hit a snag answering that — please try again.", icon=":material/error:")
-        else:
-            st.session_state.messages.extend(
-                [{"role": "user", "content": question}, {"role": "assistant", "content": text}]
-            )
 
 
 if __name__ == "__main__":
