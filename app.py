@@ -353,8 +353,9 @@ def render_analysis(files, llm, model_id: str):
                     cols = ", ".join(f"{c} ({df[c].dtype})" for c in df.columns)
                     try:
                         render_custom_chart(df, chart_spec(request, cols, model_id, llm))
-                    except Exception as e:
-                        st.warning(f"Couldn't build that chart: {str(e)[:120]}")
+                    except Exception:
+                        log.exception("custom chart failed")
+                        st.warning("Couldn't build that chart — try naming columns from the data preview.")
                 else:
                     sheet_chart(df)
                 with st.expander("Data preview", icon=":material/table_rows:"):
@@ -362,7 +363,15 @@ def render_analysis(files, llm, model_id: str):
 
 
 def main():
-    st.set_page_config(page_title="DocMagic", page_icon="✨")
+    st.set_page_config(
+        page_title="DocMagic",
+        page_icon="✨",
+        menu_items={
+            "Get help": None,
+            "Report a bug": None,
+            "About": "✨ **DocMagic** — chat with your documents, powered by XEON AI.",
+        },
+    )
     st.session_state.setdefault("messages", [])
     st.session_state.setdefault("summary", "")
 
@@ -372,13 +381,12 @@ def main():
             "API key",
             type="password",
             placeholder="nvapi-…",
-            help="One free NVIDIA key (build.nvidia.com) powers chat and embeddings. "
-            "Leave blank if the app is deployed with its own key.",
+            help="One free NVIDIA key (build.nvidia.com) powers chat and search.",
         )
         model = st.selectbox(
             "Chat model",
             list(dict.fromkeys([LLM_MODEL, *CURATED_MODELS])) + [CUSTOM_MODEL],
-            help="All options run on NVIDIA NIM's free tier.",
+            help="Models served via NVIDIA NIM.",
         )
         if model == CUSTOM_MODEL:
             model = st.text_input("Model id", placeholder="provider/model-name").strip() or LLM_MODEL
@@ -409,31 +417,42 @@ def main():
     llm, embeddings, kb_store = resources(llm_key, base_url, model, embed_key)
     vectorstore = docs_store(embeddings)
 
-    # back to the sidebar for index status + one-click basics seeding (needs resources)
+    # back to the sidebar for status + one-click knowledge setup (needs resources)
     with st.sidebar:
         kb_n = kb_store._collection.count()
-        st.caption(f"Index: {vectorstore._collection.count():,} document chunks · {kb_n:,} basics chunks")
+        docs_ready = "ready" if vectorstore._collection.count() else "none yet"
+        st.caption(
+            f"Your documents: {docs_ready} · "
+            f"Industry knowledge: {'ready' if kb_n else 'not loaded'}"
+        )
         if kb_n == 0 and st.button(
-            "Seed logistics basics",
+            "Load industry knowledge",
             icon=":material/school:",
             width="stretch",
-            help="Download ~16 Wikipedia articles so XEON AI knows industry basics",
+            help="One-time setup so XEON AI can answer general logistics questions",
         ):
             from kb_ingest import ARTICLES, fetch
 
-            with st.status("Downloading logistics basics…") as status:
-                units = []
-                for title in ARTICLES:
-                    time.sleep(1)  # stay under wikipedia's rate limit
-                    text = fetch(title)
-                    if text:
-                        units.append(
-                            Document(page_content=text, metadata={"source": "Wikipedia", "loc": title})
-                        )
-                        status.write(title)
-                kb_store.add_documents(splitter.split_documents(units))
-                status.update(label="Basics indexed", state="complete")
-            st.rerun()
+            try:
+                with st.status("Loading industry knowledge…") as status:
+                    units = []
+                    for title in ARTICLES:
+                        time.sleep(1)  # stay under wikipedia's rate limit
+                        text = fetch(title)
+                        if text:
+                            units.append(
+                                Document(
+                                    page_content=text, metadata={"source": "Wikipedia", "loc": title}
+                                )
+                            )
+                            status.write(title)
+                    kb_store.add_documents(splitter.split_documents(units))
+                    status.update(label="Industry knowledge ready", state="complete")
+            except Exception:
+                log.exception("knowledge base load failed")
+                st.error("Couldn't load industry knowledge — please try again.", icon=":material/error:")
+            else:
+                st.rerun()
 
     if analyse:
         if not files:
@@ -442,21 +461,28 @@ def main():
             st.warning(f"Please upload at most {MAX_FILES} files at a time.")
         else:
             # uploads are in-memory; loaders want paths, so spill to a temp dir
-            with tempfile.TemporaryDirectory() as td:
-                paths = []
-                for f in files:
-                    p = os.path.join(td, f.name)
-                    with open(p, "wb") as out:
-                        out.write(f.getbuffer())
-                    paths.append(p)
-                with st.spinner("Reading and indexing…"):
-                    # each Submit & analyse starts fresh so chat only covers current files
-                    vectorstore.reset_collection()
-                    n = ingest(paths, vectorstore)
-                st.session_state.messages = []  # old chat referred to old docs
-                st.toast(f"Indexed {n} chunks", icon=":material/check_circle:")
-                with st.expander("Document summary", icon=":material/description:", expanded=True):
-                    st.session_state.summary = st.write_stream(summary_stream(paths, llm))
+            try:
+                with tempfile.TemporaryDirectory() as td:
+                    paths = []
+                    for f in files:
+                        p = os.path.join(td, f.name)
+                        with open(p, "wb") as out:
+                            out.write(f.getbuffer())
+                        paths.append(p)
+                    with st.spinner("Reading your documents…"):
+                        # each Submit & analyse starts fresh so chat only covers current files
+                        vectorstore.reset_collection()
+                        ingest(paths, vectorstore)
+                    st.session_state.messages = []  # old chat referred to old docs
+                    st.toast("Documents ready", icon=":material/check_circle:")
+                    with st.expander("Document summary", icon=":material/description:", expanded=True):
+                        st.session_state.summary = st.write_stream(summary_stream(paths, llm))
+            except Exception:
+                log.exception("analyse failed")
+                st.error(
+                    "Couldn't read those documents — check the files and try again.",
+                    icon=":material/error:",
+                )
     elif st.session_state.summary:
         with st.expander("Document summary", icon=":material/description:"):
             st.markdown(st.session_state.summary)
@@ -482,8 +508,9 @@ def main():
                 text = st.write_stream(
                     answer_stream(question, st.session_state.messages, llm, vectorstore, kb_store)
                 )
-        except Exception as e:  # rate limits & co: tell the user, keep history clean
-            st.error(f"Model call failed — try again in a moment. ({str(e)[:120]})", icon=":material/error:")
+        except Exception:  # rate limits & co: tell the user, keep history clean
+            log.exception("answer failed")
+            st.error("Sorry, I hit a snag answering that — please try again.", icon=":material/error:")
         else:
             st.session_state.messages.extend(
                 [{"role": "user", "content": question}, {"role": "assistant", "content": text}]

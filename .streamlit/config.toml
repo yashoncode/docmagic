@@ -2,6 +2,15 @@
 # Beautifully designed components aesthetic
 # Minimal, accessible, elegant with neutral palette
 
+[client]
+toolbarMode = "viewer"
+
+[browser]
+gatherUsageStats = false
+
+[server]
+maxUploadSize = 25
+
 [theme]
 base = "light"
 primaryColor = "#18181B"
