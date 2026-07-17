@@ -17,9 +17,9 @@ request.
 
 ## Demo
 
-**Live app:** _deploy on Streamlit Community Cloud and drop the URL here_
+**Live app:** [docmagic.streamlit.app](https://docmagic.streamlit.app/)
 
-<!-- Add a screenshot once deployed:  ![DocMagic](docs/screenshot.png) -->
+<!-- Add a screenshot:  ![DocMagic](docs/screenshot.png) -->
 
 ## Features
 
@@ -99,7 +99,6 @@ app.py                  # Streamlit app: UI, RAG pipeline, analytics
 kb_ingest.py            # Builds the logistics knowledge base
 test_rag.py             # Unit tests: chunking, retrieval, Excel parsing
 .streamlit/config.toml  # Theme and server configuration
-finetune/               # Domain fine-tuning kit (Llama 3.2 3B + QLoRA)
 ```
 
 ## Testing
@@ -112,7 +111,6 @@ python test_rag.py
 
 - Reranking for higher retrieval precision
 - Hybrid keyword + vector search
-- Domain-tuned model (see [`finetune/`](finetune/))
 
 ## License
 
