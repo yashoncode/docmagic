@@ -415,9 +415,10 @@ def render_analysis(files, llm, model_id: str):
 
 
 def main():
+    icon = "assets/favicon.png" if os.path.exists("assets/favicon.png") else "✨"
     st.set_page_config(
         page_title="DocMagic",
-        page_icon="✨",
+        page_icon=icon,
         layout="wide",
         menu_items={
             "Get help": None,
@@ -439,7 +440,7 @@ def main():
         pasted = st.text_input(
             "API key",
             type="password",
-            placeholder="nvapi-…",
+            placeholder="Enter your API key",
             help="One free NVIDIA key (build.nvidia.com) powers chat and search.",
         )
         model = st.selectbox(
