@@ -428,6 +428,12 @@ def main():
     st.session_state.setdefault("messages", [])
     st.session_state.setdefault("summary", "")
 
+    # hide the hover anchor-link icons Streamlit adds to every heading
+    st.markdown(
+        "<style>[data-testid='stHeaderActionElements']{display:none}</style>",
+        unsafe_allow_html=True,
+    )
+
     with st.sidebar:
         st.subheader(":material/key: Access")
         pasted = st.text_input(
