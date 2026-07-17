@@ -1,24 +1,29 @@
-"""Smallest check that fails if chunking or retrieval breaks. No API key needed."""
+"""Smallest check that fails if loading, splitting or retrieval breaks. No API key needed."""
 
 import os
 import tempfile
 
 import chromadb
+from langchain_core.documents import Document
 from openpyxl import Workbook
 
-from app import chunk_text, extract_units
+from app import load_units, splitter
 
 
-def test_chunking():
-    words = " ".join(f"w{i}" for i in range(600))
-    chunks = chunk_text(words, size=250, overlap=50)
-    assert len(chunks) == 3
-    # overlap: last 50 words of chunk 1 == first 50 of chunk 2
-    assert chunks[0].split()[-50:] == chunks[1].split()[:50]
-    assert chunk_text("") == []
+def test_splitting():
+    doc = Document(
+        page_content=" ".join(f"w{i}" for i in range(600)),
+        metadata={"source": "x.pdf", "loc": "p.1"},
+    )
+    chunks = splitter.split_documents([doc])
+    assert len(chunks) > 1
+    # metadata (the citation label) must survive splitting
+    assert all(c.metadata == doc.metadata for c in chunks)
+    assert splitter.split_documents([]) == []
 
 
 def test_retrieval_roundtrip():
+    # framework-free sanity check: Chroma's built-in local embeddings
     db = chromadb.EphemeralClient()
     col = db.get_or_create_collection("test")
     col.add(
@@ -33,7 +38,7 @@ def test_retrieval_roundtrip():
     assert res["metadatas"][0][0]["source"] == "rates.pdf"
 
 
-def test_excel_extraction():
+def test_excel_loader():
     wb = Workbook()
     ws = wb.active
     ws.title = "Rates"
@@ -43,13 +48,16 @@ def test_excel_extraction():
         path = f.name
     wb.save(path)
     try:
-        assert list(extract_units(path)) == [("Rates", "City | Rate\nChennai | 12")]
+        docs = load_units(path)
+        assert len(docs) == 1
+        assert docs[0].page_content == "City | Rate\nChennai | 12"
+        assert docs[0].metadata == {"source": os.path.basename(path), "loc": "Rates"}
     finally:
         os.remove(path)
 
 
 if __name__ == "__main__":
-    test_chunking()
+    test_splitting()
     test_retrieval_roundtrip()
-    test_excel_extraction()
+    test_excel_loader()
     print("ok")

@@ -1,22 +1,31 @@
-"""DocMagic — chat with your Docs (PDFs and Excel).
+"""DocMagic — chat with your Docs (PDFs and Excel). LangChain + Streamlit edition.
 
-RAG pipeline: PDF/Excel -> chunks -> Chroma (local, free) -> LLM via any
-OpenAI-compatible API (NVIDIA NIM free tier by default).
+Same RAG pipeline as master, rebuilt on LangChain abstractions with a
+Streamlit frontend: loaders -> splitter -> Chroma vector store -> LCEL chain.
+Run: streamlit run app.py
 """
 
 import logging
 import os
+import tempfile
+from operator import itemgetter
 
-import chromadb
-import gradio as gr
+import streamlit as st
 from dotenv import load_dotenv
-from openai import OpenAI
+from langchain_chroma import Chroma
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_core.documents import Document
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables import RunnablePassthrough
+from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
+from langchain_openai import ChatOpenAI
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from openpyxl import load_workbook
-from pypdf import PdfReader
 
-load_dotenv(override=True)  # .env edits win on gradio hot-reload
+load_dotenv(override=True)  # .env edits win on rerun
 
-# root stays at WARNING so httpx/gradio chatter is hidden; only our logs show
+# root stays at WARNING so httpx/streamlit chatter is hidden; only our logs show
 logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("docmagic")
 log.setLevel(logging.INFO)
@@ -27,8 +36,8 @@ LLM_MODEL = os.getenv("LLM_MODEL", "meta/llama-3.1-8b-instruct")
 EMBED_API_KEY = os.getenv("EMBED_API_KEY") or LLM_API_KEY
 EMBED_MODEL = os.getenv("EMBED_MODEL", "nvidia/nemotron-3-embed-1b")
 
-CHUNK_WORDS = 250
-CHUNK_OVERLAP = 50
+CHUNK_CHARS = 1500  # splitter counts characters; ~250 words
+CHUNK_OVERLAP = 300  # ~50 words
 TOP_K = 5
 MAX_FILES = 2
 SUMMARY_WORDS = 1500  # per file; keeps the summary prompt small and cheap
@@ -41,116 +50,99 @@ SYSTEM_PROMPT = (
     "If the context does not contain the answer, say so plainly."
 )
 
-client = OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
-embed_client = OpenAI(base_url=LLM_BASE_URL, api_key=EMBED_API_KEY)
-# embeddings come from the NIM API (see embed()); Chroma only stores/searches them
-db = chromadb.PersistentClient(path="chroma_db")
-collection = db.get_or_create_collection("docs")
+# splits on paragraphs first, then lines, then words — chunks end at natural
+# boundaries instead of mid-sentence (master's chunk_text cuts anywhere)
+splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_CHARS, chunk_overlap=CHUNK_OVERLAP)
+
+ANSWER_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        ("system", SYSTEM_PROMPT),
+        MessagesPlaceholder("history"),
+        ("human", "Context:\n{context}\n\nQuestion: {question}"),
+    ]
+)
+
+SUMMARY_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        ("system", SYSTEM_PROMPT),
+        (
+            "human",
+            "Give a short plain-language summary of each document below "
+            "(a few bullet points per document), then one line on what they cover "
+            "together.\n\n{excerpts}",
+        ),
+    ]
+)
 
 
-def embed(texts: list[str], input_type: str) -> list[list[float]]:
-    """Embed via NIM. input_type: 'passage' for docs, 'query' for questions."""
-    res = embed_client.embeddings.create(
-        model=EMBED_MODEL,
-        input=texts,
-        extra_body={"input_type": input_type, "truncate": "END"},
+@st.cache_resource
+def resources():
+    """LLM + vector store, created once per server instead of on every rerun."""
+    extra = {"chat_template_kwargs": {"enable_thinking": False}} if "nemotron" in LLM_MODEL else None
+    llm = ChatOpenAI(
+        base_url=LLM_BASE_URL,
+        api_key=LLM_API_KEY,
+        model=LLM_MODEL,
+        temperature=0.2,
+        extra_body=extra,
     )
-    return [d.embedding for d in res.data]
+    # embed_documents() sends input_type=passage, embed_query() sends query —
+    # the asymmetry we handled by hand in master's embed()
+    embeddings = NVIDIAEmbeddings(
+        base_url=LLM_BASE_URL, model=EMBED_MODEL, api_key=EMBED_API_KEY, truncate="END"
+    )
+    vectorstore = Chroma(
+        collection_name="docs", embedding_function=embeddings, persist_directory="chroma_db"
+    )
+    return llm, vectorstore
 
 
-def chunk_text(text: str, size: int = CHUNK_WORDS, overlap: int = CHUNK_OVERLAP) -> list[str]:
-    """Split text into overlapping word-window chunks."""
-    words = text.split()
-    if not words:
-        return []
-    chunks = []
-    step = size - overlap
-    for start in range(0, len(words), step):
-        chunks.append(" ".join(words[start : start + size]))
-        if start + size >= len(words):
-            break
-    return chunks
-
-
-def extract_units(path: str):
-    """Yield (location_label, text) per PDF page or Excel sheet."""
+def load_units(path: str) -> list[Document]:
+    """One Document per PDF page or Excel sheet, labeled for citations."""
+    name = os.path.basename(path)
     if path.lower().endswith((".xlsx", ".xlsm")):
         wb = load_workbook(path, read_only=True, data_only=True)
+        docs = []
         for ws in wb.worksheets:
             rows = (
                 " | ".join(str(c) for c in row if c is not None)
                 for row in ws.iter_rows(values_only=True)
             )
-            yield ws.title, "\n".join(r for r in rows if r)
+            text = "\n".join(r for r in rows if r)
+            docs.append(Document(page_content=text, metadata={"source": name, "loc": ws.title}))
         wb.close()
-    else:
-        reader = PdfReader(path)
-        for page_no, page in enumerate(reader.pages, start=1):
-            yield f"p.{page_no}", page.extract_text() or ""
+        return docs
+    return [
+        Document(
+            page_content=p.page_content,
+            metadata={"source": name, "loc": f"p.{p.metadata.get('page', 0) + 1}"},
+        )
+        for p in PyPDFLoader(path).load()
+    ]
 
 
-def ingest(files: list[str]) -> str:
-    """Extract, chunk and index the uploaded documents."""
-    if not files:
-        return "Upload at least one PDF or Excel file."
-    total = 0
-    for path in files:
-        name = os.path.basename(path)
-        ids, docs, metas = [], [], []
-        for loc, text in extract_units(path):
-            for i, chunk in enumerate(chunk_text(text)):
-                ids.append(f"{name}-{loc}-c{i}")
-                docs.append(chunk)
-                metas.append({"source": name, "loc": loc})
-        for s in range(0, len(ids), 50):  # ponytail: 50/batch, NIM rejects huge ones
-            b = slice(s, s + 50)
-            collection.add(
-                ids=ids[b],
-                documents=docs[b],
-                metadatas=metas[b],
-                embeddings=embed(docs[b], "passage"),
-            )
-        total += len(ids)
-    return f"Indexed {total} chunks. Collection now holds {collection.count()}."
+def ingest(paths: list[str], vectorstore: Chroma) -> int:
+    """Load, split and index the documents; returns the chunk count."""
+    chunks = splitter.split_documents(doc for path in paths for doc in load_units(path))
+    if chunks:
+        vectorstore.add_documents(chunks)  # NVIDIAEmbeddings batches 50/call itself
+    return len(chunks)
 
 
-def stream_llm(messages: list[dict]):
-    """Stream a chat completion, yielding the accumulated text."""
-    extra = {}
-    if "nemotron" in LLM_MODEL:
-        # answer directly; set True to enable chain-of-thought (slower)
-        extra = {"chat_template_kwargs": {"enable_thinking": False}}
-    stream = client.chat.completions.create(
-        model=LLM_MODEL, messages=messages, temperature=0.2, stream=True, extra_body=extra
+def format_docs(docs: list[Document]) -> str:
+    log.info("context <- %s", [f"{d.metadata['source']} {d.metadata['loc']}" for d in docs])
+    return "\n\n".join(
+        f"[{d.metadata['source']} {d.metadata['loc']}]\n{d.page_content}" for d in docs
     )
-    text = ""
-    for event in stream:
-        if not event.choices:  # NIM sends empty/usage chunks on some models
-            continue
-        text += event.choices[0].delta.content or ""
-        yield text
-    log.info("LLM response <- %d chars: %s", len(text), text)
 
 
-def analyse(files: list[str]):
-    """Index the uploaded files (fresh collection) and stream a summary."""
-    global collection
-    if not files:
-        yield "Upload at least one file first."
-        return
-    if len(files) > MAX_FILES:
-        yield f"Please upload at most {MAX_FILES} files at a time."
-        return
-    yield "Reading and indexing…"
-    # each Submit & Analyse starts fresh so chat only covers the current files
-    db.delete_collection("docs")
-    collection = db.get_or_create_collection("docs")
-    ingest(files)
+def summary_stream(paths: list[str], llm):
+    """Yield summary tokens for the first SUMMARY_WORDS words of each file."""
     excerpts = []
-    for path in files:
+    for path in paths:
         words = []
-        for _, text in extract_units(path):
-            words += text.split()
+        for doc in load_units(path):
+            words += doc.page_content.split()
             if len(words) >= SUMMARY_WORDS:
                 break
         excerpts.append(f"## {os.path.basename(path)}\n{' '.join(words[:SUMMARY_WORDS])}")
@@ -158,72 +150,77 @@ def analyse(files: list[str]):
         "LLM request -> %s %s | summarise: %s",
         LLM_BASE_URL,
         LLM_MODEL,
-        [os.path.basename(p) for p in files],
+        [os.path.basename(p) for p in paths],
     )
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": "Give a short plain-language summary of each document below "
-            "(a few bullet points per document), then one line on what they cover "
-            "together.\n\n" + "\n\n".join(excerpts),
-        },
-    ]
-    yield from stream_llm(messages)
+    chain = SUMMARY_PROMPT | llm | StrOutputParser()
+    yield from chain.stream({"excerpts": "\n\n".join(excerpts)})
 
 
-def retrieve(question: str) -> list[tuple[str, dict]]:
-    res = collection.query(query_embeddings=embed([question], "query"), n_results=TOP_K)
-    return list(zip(res["documents"][0], res["metadatas"][0]))
-
-
-def answer(message: str, history: list[dict]):
-    if collection.count() == 0:
+def answer_stream(question: str, history: list[dict], llm, vectorstore: Chroma):
+    """Yield answer tokens from the LCEL chain: retrieve -> prompt -> llm."""
+    if not vectorstore.get(limit=1)["ids"]:
         yield "No documents indexed yet — upload files and click Submit & Analyse first."
         return
-    hits = retrieve(message)
-    context = "\n\n".join(
-        # 'p.' fallback: chunks indexed before Excel support stored {"page": N}
-        f"[{m['source']} {m.get('loc', 'p.' + str(m.get('page', '?')))}]\n{doc}"
-        for doc, m in hits
+    retriever = vectorstore.as_retriever(search_kwargs={"k": TOP_K})
+    chain = (
+        RunnablePassthrough.assign(context=itemgetter("question") | retriever | format_docs)
+        | ANSWER_PROMPT
+        | llm
+        | StrOutputParser()
     )
-    messages = (
-        [{"role": "system", "content": SYSTEM_PROMPT}]
-        # keep only the keys the OpenAI API accepts — gradio adds extras
-        + [{"role": m["role"], "content": m["content"]} for m in history]
-        + [{"role": "user", "content": f"Context:\n{context}\n\nQuestion: {message}"}]
-    )
-    log.info(
-        "LLM request -> %s %s | Q: %s | context: %s",
-        LLM_BASE_URL,
-        LLM_MODEL,
-        message,
-        [f"{m['source']} {m.get('loc', m.get('page', '?'))}" for _, m in hits],
-    )
-    yield from stream_llm(messages)
+    log.info("LLM request -> %s %s | Q: %s", LLM_BASE_URL, LLM_MODEL, question)
+    yield from chain.stream({"question": question, "history": history})
 
 
-CSS = """
-.gradio-container {max-width: 760px !important; margin: 0 auto !important;}
-#brand {text-align: center; margin-top: 16px;}
-#brand p {color: var(--body-text-color-subdued);}
-"""
+def main():
+    st.set_page_config(page_title="DocMagic", page_icon="✨")
+    llm, vectorstore = resources()
 
-with gr.Blocks(title="DocMagic") as demo:
-    gr.Markdown(
-        "# ✨ DocMagic\nChat with your Docs (supports PDFs and Excel)",
-        elem_id="brand",
+    st.title("✨ DocMagic")
+    st.caption("Chat with your Docs (supports PDFs and Excel)")
+    files = st.file_uploader(
+        f"Drop up to {MAX_FILES} files here",
+        type=["pdf", "xlsx", "xlsm"],
+        accept_multiple_files=True,
     )
-    files = gr.File(
-        file_count="multiple",
-        file_types=[".pdf", ".xlsx", ".xlsm"],
-        label=f"Drop up to {MAX_FILES} files here",
-    )
-    analyse_btn = gr.Button("Submit & Analyse", variant="primary")
-    summary = gr.Markdown()
-    analyse_btn.click(analyse, inputs=files, outputs=summary)
-    with gr.Accordion("💬 Chat with your docs", open=False):
-        gr.ChatInterface(answer)
+
+    if st.button("Submit & Analyse", type="primary"):
+        if not files:
+            st.warning("Upload at least one file first.")
+        elif len(files) > MAX_FILES:
+            st.warning(f"Please upload at most {MAX_FILES} files at a time.")
+        else:
+            # uploads are in-memory; loaders want paths, so spill to a temp dir
+            with tempfile.TemporaryDirectory() as td:
+                paths = []
+                for f in files:
+                    p = os.path.join(td, f.name)
+                    with open(p, "wb") as out:
+                        out.write(f.getbuffer())
+                    paths.append(p)
+                with st.spinner("Reading and indexing…"):
+                    # each Submit & Analyse starts fresh so chat only covers current files
+                    vectorstore.reset_collection()
+                    n = ingest(paths, vectorstore)
+                st.session_state.messages = []  # old chat referred to old docs
+                st.session_state.summary = st.write_stream(summary_stream(paths, llm))
+            st.caption(f"Indexed {n} chunks.")
+    elif st.session_state.get("summary"):
+        st.markdown(st.session_state.summary)
+
+    st.divider()
+    st.subheader("💬 Chat with your docs")
+    for m in st.session_state.get("messages", []):
+        st.chat_message(m["role"]).markdown(m["content"])
+    if question := st.chat_input("Ask about your documents"):
+        st.chat_message("user").markdown(question)
+        history = st.session_state.get("messages", [])
+        with st.chat_message("assistant"):
+            text = st.write_stream(answer_stream(question, history, llm, vectorstore))
+        st.session_state.setdefault("messages", []).extend(
+            [{"role": "user", "content": question}, {"role": "assistant", "content": text}]
+        )
+
 
 if __name__ == "__main__":
-    demo.launch(theme=gr.themes.Soft(), css=CSS)
+    main()

@@ -1,6 +1,9 @@
-gradio
-chromadb
+streamlit
+langchain-openai
+langchain-chroma
+langchain-community
+langchain-text-splitters
+langchain-nvidia-ai-endpoints
 pypdf
 openpyxl
-openai
 python-dotenv
