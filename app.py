@@ -11,6 +11,7 @@ import os
 import tempfile
 import time
 from operator import itemgetter
+from uuid import uuid4
 
 import pandas as pd
 import streamlit as st
@@ -18,7 +19,7 @@ from dotenv import load_dotenv
 from langchain_chroma import Chroma
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_core.documents import Document
-from langchain_core.output_parsers import StrOutputParser
+from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableLambda, RunnableParallel, RunnablePassthrough
 from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
@@ -93,6 +94,22 @@ ANSWER_PROMPT = ChatPromptTemplate.from_messages(
     ]
 )
 
+CHART_SPEC_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "Translate the user's chart request into JSON. Available columns (with dtype): "
+            "{columns}. Reply with ONLY this JSON, no prose: "
+            '{{"chart": "bar|line|area|scatter|pie", "x": "<column or null>", '
+            '"y": ["<numeric columns>"], "agg": "sum|mean|count|none", "top_n": 12}}. '
+            "Choose the type that fits the data: change over time -> line or area, "
+            "category comparison -> bar, share of a whole with few categories -> pie, "
+            "relationship between two numeric columns -> scatter.",
+        ),
+        ("human", "{question}"),
+    ]
+)
+
 SUMMARY_PROMPT = ChatPromptTemplate.from_messages(
     [
         ("system", SYSTEM_PROMPT),
@@ -129,14 +146,20 @@ def resources(llm_key: str, llm_base_url: str, llm_model: str, embed_key: str):
     embeddings = NVIDIAEmbeddings(
         base_url=EMBED_BASE_URL, model=EMBED_MODEL, api_key=embed_key, truncate="END"
     )
-    vectorstore = Chroma(
-        collection_name="docs", embedding_function=embeddings, persist_directory="chroma_db"
-    )
-    # persistent logistics-basics collection; survives the per-Analyse wipe of "docs"
+    # logistics-basics collection: shared by all sessions, survives per-Analyse wipes
     kb_store = Chroma(  # chroma requires names >= 3 chars, so not "kb"
         collection_name="basics", embedding_function=embeddings, persist_directory="chroma_db"
     )
-    return llm, vectorstore, kb_store
+    return llm, embeddings, kb_store
+
+
+def docs_store(embeddings) -> Chroma:
+    """Per-browser-session docs collection: visitors never see each other's files."""
+    sid = st.session_state.setdefault("session_id", uuid4().hex[:12])
+    # ponytail: orphaned session collections pile up until restart; fine on ephemeral cloud
+    return Chroma(
+        collection_name=f"docs-{sid}", embedding_function=embeddings, persist_directory="chroma_db"
+    )
 
 
 def default_resources():
@@ -253,7 +276,60 @@ def sheet_chart(df: pd.DataFrame):
     st.line_chart(df[num_cols])
 
 
-def render_analysis(files):
+@st.cache_data(max_entries=32, show_spinner="Designing chart…")
+def chart_spec(question: str, columns: str, model_id: str, _llm) -> dict:
+    """User's chart request -> validated-later JSON spec (cached per question)."""
+    chain = CHART_SPEC_PROMPT | _llm | JsonOutputParser()
+    return chain.invoke({"question": question, "columns": columns})
+
+
+def render_custom_chart(df: pd.DataFrame, spec: dict):
+    """Render the chart the spec describes; falls back with a hint when it can't."""
+    num = list(df.select_dtypes("number").columns)
+    kind = str(spec.get("chart", "bar")).lower()
+    x = spec.get("x") if spec.get("x") in df.columns else None
+    ys = [c for c in (spec.get("y") or []) if c in num] or num[:1]
+    agg = str(spec.get("agg", "sum")).lower()
+    top_n = min(int(spec.get("top_n") or 12), 30)
+
+    if kind in ("line", "area", "scatter"):
+        if not ys:
+            st.warning("No numeric column matched — try naming one from the data preview.")
+            return
+        {"line": st.line_chart, "area": st.area_chart, "scatter": st.scatter_chart}[kind](
+            df, x=x, y=ys
+        )
+        return
+    # bar / pie aggregate by a category
+    if not x:
+        st.warning("Tell me what to group by — e.g. 'bar of Volume by City'.")
+        return
+    if agg == "count":
+        data = df.groupby(x).size().rename("count").to_frame()
+        ys = ["count"]
+    elif ys:
+        data = df.groupby(x)[ys].agg("mean" if agg == "mean" else "sum")
+    else:
+        st.warning("No numeric column matched — try naming one from the data preview.")
+        return
+    data = data.sort_values(ys[0], ascending=False).head(8 if kind == "pie" else top_n)
+    if kind == "pie":
+        import altair as alt
+
+        st.altair_chart(
+            alt.Chart(data.reset_index())
+            .mark_arc(innerRadius=45)
+            .encode(
+                theta=alt.Theta(ys[0], type="quantitative"),
+                color=alt.Color(x, type="nominal"),
+                tooltip=[x, ys[0]],
+            )
+        )
+        return
+    st.bar_chart(data, y=ys)
+
+
+def render_analysis(files, llm, model_id: str):
     """Charts + previews for uploaded Excel files (analysis toggle)."""
     st.header(":material/query_stats: Data analysis")
     excel = [f for f in files if f.name.lower().endswith((".xlsx", ".xlsm"))]
@@ -267,13 +343,26 @@ def render_analysis(files):
         for tab, (name, df) in zip(tabs, sheets.items()):
             with tab:
                 st.caption(f"{len(df):,} rows · {len(df.columns)} columns")
-                sheet_chart(df)
+                request = st.text_input(
+                    "Describe a chart",
+                    placeholder='e.g. "pie of shipments by status" or "line of Volume over Date"',
+                    key=f"chart-{f.name}-{name}",
+                    help="XEON AI picks the chart type and columns; leave blank for the automatic chart.",
+                )
+                if request:
+                    cols = ", ".join(f"{c} ({df[c].dtype})" for c in df.columns)
+                    try:
+                        render_custom_chart(df, chart_spec(request, cols, model_id, llm))
+                    except Exception as e:
+                        st.warning(f"Couldn't build that chart: {str(e)[:120]}")
+                else:
+                    sheet_chart(df)
                 with st.expander("Data preview", icon=":material/table_rows:"):
                     st.dataframe(df.head(100))
 
 
 def main():
-    st.set_page_config(page_title="XEON AI — DocMagic", page_icon="✨")
+    st.set_page_config(page_title="DocMagic", page_icon="✨")
     st.session_state.setdefault("messages", [])
     st.session_state.setdefault("summary", "")
 
@@ -309,15 +398,16 @@ def main():
             "Enable analysis", help="Charts and data previews for uploaded Excel files"
         )
 
-    st.title("✨ XEON AI")
-    st.caption("Chat with your documents — answers cited to the exact file, page or sheet.")
+    st.title("✨ DocMagic")
+    st.caption("Chat with your documents, powered by XEON AI — answers cited to the exact file, page or sheet.")
 
     llm_key = pasted or secret("LLM_API_KEY")
     if not llm_key:
         st.info("Paste your free NVIDIA API key in the sidebar to get started.", icon=":material/key:")
         st.stop()
     embed_key = pasted or secret("EMBED_API_KEY") or llm_key
-    llm, vectorstore, kb_store = resources(llm_key, base_url, model, embed_key)
+    llm, embeddings, kb_store = resources(llm_key, base_url, model, embed_key)
+    vectorstore = docs_store(embeddings)
 
     # back to the sidebar for index status + one-click basics seeding (needs resources)
     with st.sidebar:
@@ -372,7 +462,7 @@ def main():
             st.markdown(st.session_state.summary)
 
     if analysis_on and files:
-        render_analysis(files)
+        render_analysis(files, llm, model)
 
     for m in st.session_state.messages:
         st.chat_message(m["role"]).markdown(m["content"])
