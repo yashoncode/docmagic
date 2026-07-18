@@ -438,10 +438,11 @@ def main():
     with st.sidebar:
         st.subheader(":material/key: Access")
         pasted = st.text_input(
-            "API key",
+            "Chat API key",
             type="password",
             placeholder="Enter your API key",
-            help="One free NVIDIA key (build.nvidia.com) powers chat and search.",
+            help="Bring your own free NVIDIA key for chat (build.nvidia.com). "
+            "Document search runs on the app's key — nothing needed from you.",
         )
         model = st.selectbox(
             "Chat model",
@@ -473,9 +474,15 @@ def main():
 
     llm_key = pasted or secret("LLM_API_KEY")
     if not llm_key:
-        st.info("Paste your free NVIDIA API key in the sidebar to get started.", icon=":material/key:")
+        st.info(
+            "Enter your free NVIDIA API key in the sidebar to start chatting — "
+            "grab one at build.nvidia.com. Document search is already provided.",
+            icon=":material/key:",
+        )
         st.stop()
-    embed_key = pasted or secret("EMBED_API_KEY") or llm_key
+    # embeddings run on the app's own key so search stays free for visitors;
+    # fall back to the user's key for local runs with no configured secret
+    embed_key = secret("EMBED_API_KEY") or pasted or llm_key
     llm, embeddings, kb_store = resources(llm_key, base_url, model, embed_key)
     vectorstore = docs_store(embeddings)
 

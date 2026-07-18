@@ -88,9 +88,14 @@ Set these in `.env`, or supply the key in the sidebar / Streamlit Secrets at run
 ## Deployment
 
 Deploy on [Streamlit Community Cloud](https://share.streamlit.io): point it at
-`app.py`, and either set `LLM_API_KEY` in the app's **Secrets** or let each
-visitor paste their own key. Storage on the free tier is ephemeral — rebuild
-the knowledge base after a restart with the sidebar button.
+`app.py` and add keys under the app's **Secrets** (TOML):
+
+- Set `EMBED_API_KEY` to provide document search for free — visitors then only
+  bring their own chat key.
+- Optionally set `LLM_API_KEY` too, to run the whole app without any visitor key.
+
+Storage on the free tier is ephemeral — rebuild the knowledge base after a
+restart with the sidebar button.
 
 ## Project structure
 
