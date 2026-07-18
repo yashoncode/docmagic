@@ -502,17 +502,16 @@ def main():
     )
 
     llm_key = pasted or secret("LLM_API_KEY")
-    if not llm_key:
+    # embeddings run on the app's own key, so document search and the knowledge
+    # base stay free; only chatting and summarising need a user's chat key.
+    embed_key = secret("EMBED_API_KEY") or pasted or llm_key
+    if not embed_key:
         st.info(
-            "Enter your free NVIDIA API key in the sidebar to start chatting — "
-            "grab one at build.nvidia.com. Document search is already provided.",
+            "Enter an NVIDIA API key in the sidebar to begin — a free one at build.nvidia.com.",
             icon=":material/key:",
         )
         st.stop()
-    # embeddings run on the app's own key so search stays free for visitors;
-    # fall back to the user's key for local runs with no configured secret
-    embed_key = secret("EMBED_API_KEY") or pasted or llm_key
-    llm, embeddings, kb_store = resources(llm_key, base_url, model, embed_key)
+    llm, embeddings, kb_store = resources(llm_key or "no-chat-key", base_url, model, embed_key)
     vectorstore = docs_store(embeddings)
 
     # side-by-side layout when a PDF is uploaded: chat on the left, live preview on the right
@@ -546,6 +545,13 @@ def main():
                                 "I couldn't find readable text in those files — a scanned or "
                                 "image-only PDF has no text layer to read.",
                                 icon=":material/document_scanner:",
+                            )
+                        elif not llm_key:
+                            st.session_state.summary = ""
+                            st.success(
+                                "Documents indexed. Add your API key in the sidebar to chat "
+                                "and get a summary.",
+                                icon=":material/check_circle:",
                             )
                         else:
                             st.toast("Documents ready", icon=":material/check_circle:")
@@ -591,7 +597,14 @@ def main():
     prompt = st.chat_input("Ask about your documents", submit_mode="disable")
     question = prompt or question
 
-    if question:
+    if question and not llm_key:
+        with main_col:
+            st.chat_message("user").markdown(question)
+            st.info(
+                "Add your NVIDIA API key in the sidebar to chat about your documents.",
+                icon=":material/key:",
+            )
+    elif question:
         with main_col:
             st.chat_message("user").markdown(question)
             try:
