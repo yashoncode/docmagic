@@ -5,10 +5,12 @@ loaders -> splitter -> Chroma vector store -> LCEL chain.
 Run: streamlit run app.py
 """
 
+import asyncio
 import io
 import json
 import logging
 import os
+import sys
 import tempfile
 import time
 from datetime import datetime
@@ -84,6 +86,13 @@ SYSTEM_PROMPT = (
     "warmly in a sentence or two — no citations, no mention of context or documents."
 )
 
+AGENT_PROMPT = SYSTEM_PROMPT + (
+    " You have tools. Use search_documents for anything about the user's documents or "
+    "logistics concepts. Use calculate for ALL arithmetic — rates, totals, percentages, "
+    "GST — never do math in your head; fetch the numbers from the documents first, then "
+    "calculate. Show the working briefly and keep citations for document excerpts."
+)
+
 # splits on paragraphs first, then lines, then words — chunks end at natural
 # boundaries instead of mid-sentence
 splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_CHARS, chunk_overlap=CHUNK_OVERLAP)
@@ -153,6 +162,25 @@ def resources(llm_key: str, llm_base_url: str, llm_model: str, embed_key: str):
         collection_name="basics", embedding_function=embeddings, persist_directory="chroma_db"
     )
     return llm, embeddings, kb_store
+
+
+@st.cache_resource
+def mcp_tools() -> list:
+    """Calculator MCP server's tools as LangChain tools; [] if it can't start."""
+    try:
+        from langchain_mcp_adapters.client import MultiServerMCPClient
+
+        server = {
+            "transport": "stdio",
+            "command": sys.executable,
+            "args": ["-m", "mcp_server_calculator"],
+        }
+        tools = asyncio.run(MultiServerMCPClient({"calculator": server}).get_tools())
+        log.info("MCP tools loaded: %s", [t.name for t in tools])
+        return tools
+    except Exception:
+        log.exception("MCP server unavailable — chat falls back to the plain RAG chain")
+        return []
 
 
 def docs_store(embeddings) -> Chroma:
@@ -244,6 +272,45 @@ def answer_stream(question: str, history: list[dict], llm, vectorstore: Chroma, 
     )
     log.info("LLM request | Q: %s", question)
     yield from chain.stream({"question": question, "history": history})
+
+
+def agent_stream(question: str, history: list[dict], llm, vectorstore: Chroma, kb_store: Chroma):
+    """Agent chat: the LLM picks between document search and the MCP calculator per question."""
+    from langchain.agents import create_agent
+    from langchain_core.messages import AIMessageChunk
+    from langchain_core.tools import tool
+
+    @tool
+    def search_documents(query: str) -> str:
+        """Search the user's uploaded documents and the logistics knowledge base."""
+        docs = []
+        if vectorstore.get(limit=1)["ids"]:
+            docs += vectorstore.similarity_search(query, k=TOP_K)
+        if kb_store.get(limit=1)["ids"]:
+            docs += kb_store.similarity_search(query, k=KB_TOP_K)
+        return format_docs(docs) if docs else "No documents are indexed yet."
+
+    agent = create_agent(llm, [search_documents, *mcp_tools()], system_prompt=AGENT_PROMPT)
+    log.info("LLM request (agent) | Q: %s", question)
+
+    async def tokens():
+        async for chunk, _ in agent.astream(
+            {"messages": [*history, {"role": "user", "content": question}]},
+            stream_mode="messages",
+        ):
+            if isinstance(chunk, AIMessageChunk) and isinstance(chunk.content, str) and chunk.content:
+                yield chunk.content
+
+    # st.write_stream is sync; drive the async agent one token at a time on a private loop
+    gen, loop = tokens(), asyncio.new_event_loop()
+    try:
+        while True:
+            try:
+                yield loop.run_until_complete(anext(gen))
+            except StopAsyncIteration:
+                break
+    finally:
+        loop.close()
 
 
 def _detect_header(raw: pd.DataFrame) -> int:
@@ -608,9 +675,11 @@ def main():
         with main_col:
             st.chat_message("user").markdown(question)
             try:
+                # agent (calculator via MCP) when the server is up; plain RAG chain otherwise
+                stream = agent_stream if mcp_tools() else answer_stream
                 with st.chat_message("assistant"):
                     text = st.write_stream(
-                        answer_stream(question, st.session_state.messages, llm, vectorstore, kb_store)
+                        stream(question, st.session_state.messages, llm, vectorstore, kb_store)
                     )
             except Exception:  # rate limits & co: tell the user, keep history clean
                 log.exception("answer failed")

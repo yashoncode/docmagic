@@ -9,3 +9,6 @@ pypdf
 openpyxl
 python-dotenv
 requests
+langchain  # create_agent for the calculator-tool chat agent
+langchain-mcp-adapters
+mcp-server-calculator
