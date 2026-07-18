@@ -6,10 +6,12 @@ Run: streamlit run app.py
 """
 
 import io
+import json
 import logging
 import os
 import tempfile
 import time
+from datetime import datetime
 from operator import itemgetter
 from uuid import uuid4
 
@@ -414,6 +416,33 @@ def render_analysis(files, llm, model_id: str):
                     st.dataframe(df.head(100))
 
 
+FEEDBACK_LOG = "feedback.jsonl"
+
+
+def log_feedback(idx: int):
+    """Append a thumbs rating for the answer at message `idx` to FEEDBACK_LOG.
+
+    This only *records* signal for later review — it does not change live answers.
+    """
+    rating = st.session_state.get(f"fb-{idx}")
+    if rating is None:  # selection cleared
+        return
+    msgs = st.session_state.get("messages", [])
+    record = {
+        "time": datetime.now().isoformat(timespec="seconds"),
+        "rating": "up" if rating == 1 else "down",
+        "model": st.session_state.get("fb_model", ""),
+        "question": msgs[idx - 1]["content"] if 0 < idx < len(msgs) else "",
+        "answer": msgs[idx]["content"] if idx < len(msgs) else "",
+    }
+    try:
+        with open(FEEDBACK_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        log.info("feedback %s logged", record["rating"])
+    except Exception:
+        log.exception("feedback log failed")
+
+
 def main():
     icon = "assets/favicon.png" if os.path.exists("assets/favicon.png") else ":material/description:"
     st.set_page_config(
@@ -537,8 +566,12 @@ def main():
         if analysis_on and files:
             render_analysis(files, llm, model)
 
-        for m in st.session_state.messages:
-            st.chat_message(m["role"]).markdown(m["content"])
+        st.session_state["fb_model"] = model  # recorded alongside any feedback
+        for i, m in enumerate(st.session_state.messages):
+            with st.chat_message(m["role"]):
+                st.markdown(m["content"])
+                if m["role"] == "assistant":
+                    st.feedback("thumbs", key=f"fb-{i}", on_change=log_feedback, args=(i,))
 
         question = None
         if not st.session_state.messages:
@@ -575,6 +608,7 @@ def main():
                 st.session_state.messages.extend(
                     [{"role": "user", "content": question}, {"role": "assistant", "content": text}]
                 )
+                st.rerun()  # re-render so the new answer shows its feedback buttons
 
     # sidebar status LAST, so counts reflect this run's ingest instead of the pre-ingest state
     with st.sidebar:
