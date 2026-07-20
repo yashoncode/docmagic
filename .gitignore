@@ -5,3 +5,4 @@ chroma_db/
 *.pdf
 CLAUDE.md
 feedback.jsonl
+.streamlit/secrets.toml

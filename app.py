@@ -5,16 +5,17 @@ loaders -> splitter -> Chroma vector store -> LCEL chain.
 Run: streamlit run app.py
 """
 
+import ast
 import asyncio
 import io
 import json
 import logging
+import operator
 import os
-import sys
 import tempfile
-import time
 from datetime import datetime
 from operator import itemgetter
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import pandas as pd
@@ -49,7 +50,7 @@ EMBED_MODEL = os.getenv("EMBED_MODEL", "nvidia/nemotron-3-embed-1b")
 CHUNK_CHARS = 1500  # splitter counts characters; ~250 words
 CHUNK_OVERLAP = 300  # ~50 words
 TOP_K = 5
-KB_TOP_K = 3  # extra chunks from the built-in logistics knowledge base
+WEB_RESULTS = 4  # web results pulled per question when web search is on
 MAX_FILES = 2
 SUMMARY_WORDS = 1500  # per file; keeps the summary prompt small and cheap
 CHART_SERIES = 3  # max numeric series per auto-chart; more gets unreadable
@@ -77,9 +78,9 @@ SYSTEM_PROMPT = (
     "colleague: warm, plain language, short sentences — never stiff or robotic. "
     "For questions about the documents, answer ONLY from the provided context and "
     "cite the source like [file.pdf p.3] or [file.xlsx Rates] (sheet name for "
-    "spreadsheets). The context may include general reference material labeled "
-    "[Wikipedia ...]; prefer the user's documents for specifics and use the "
-    "reference only for definitions and industry basics. If the context does not "
+    "spreadsheets). The context may include live web results labeled [web ...]; "
+    "prefer the user's documents for specifics and use web results for general or "
+    "current information, citing them by domain. If the context does not "
     "have the answer, say so in one friendly sentence — do not lecture about what "
     "the context contains. "
     "If the user is just greeting or reacting ('hi', 'nice', 'thanks'), reply "
@@ -87,10 +88,11 @@ SYSTEM_PROMPT = (
 )
 
 AGENT_PROMPT = SYSTEM_PROMPT + (
-    " You have tools. Use search_documents for anything about the user's documents or "
-    "logistics concepts. Use calculate for ALL arithmetic — rates, totals, percentages, "
-    "GST — never do math in your head; fetch the numbers from the documents first, then "
-    "calculate. Show the working briefly and keep citations for document excerpts."
+    " You have tools. Use search_documents for anything about the user's uploaded files. "
+    "Use search_web for general knowledge, logistics concepts or current information. "
+    "Use calculate for ALL arithmetic — rates, totals, percentages, GST — never do math "
+    "in your head; fetch the numbers first, then calculate. Show the working briefly and "
+    "cite document excerpts by file and web results by domain."
 )
 
 # splits on paragraphs first, then lines, then words — chunks end at natural
@@ -146,7 +148,7 @@ def secret(name: str) -> str:
 
 @st.cache_resource(max_entries=4)
 def resources(llm_key: str, llm_base_url: str, llm_model: str, embed_key: str):
-    """LLM + vector stores, cached per (key, model) so sidebar changes take effect."""
+    """LLM + embeddings, cached per (key, model) so sidebar changes take effect."""
     kwargs = {}
     if "nemotron" in llm_model:
         kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
@@ -157,30 +159,30 @@ def resources(llm_key: str, llm_base_url: str, llm_model: str, embed_key: str):
     embeddings = NVIDIAEmbeddings(
         base_url=EMBED_BASE_URL, model=EMBED_MODEL, api_key=embed_key, truncate="END"
     )
-    # logistics-basics collection: shared by all sessions, survives per-Analyse wipes
-    kb_store = Chroma(  # chroma requires names >= 3 chars, so not "kb"
-        collection_name="basics", embedding_function=embeddings, persist_directory="chroma_db"
-    )
-    return llm, embeddings, kb_store
+    return llm, embeddings
 
 
-@st.cache_resource
-def mcp_tools() -> list:
-    """Calculator MCP server's tools as LangChain tools; [] if it can't start."""
-    try:
-        from langchain_mcp_adapters.client import MultiServerMCPClient
+# in-process calculator (Cloud-safe: no subprocess, no MCP server to spawn)
+_CALC_OPS = {
+    ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+    ast.Div: operator.truediv, ast.FloorDiv: operator.floordiv, ast.Mod: operator.mod,
+    ast.Pow: operator.pow, ast.USub: operator.neg, ast.UAdd: operator.pos,
+}
 
-        server = {
-            "transport": "stdio",
-            "command": sys.executable,
-            "args": ["-m", "mcp_server_calculator"],
-        }
-        tools = asyncio.run(MultiServerMCPClient({"calculator": server}).get_tools())
-        log.info("MCP tools loaded: %s", [t.name for t in tools])
-        return tools
-    except Exception:
-        log.exception("MCP server unavailable — chat falls back to the plain RAG chain")
-        return []
+
+def safe_calc(expression: str) -> float:
+    """Evaluate arithmetic safely — numbers and + - * / // % ** only, never runs code."""
+
+    def _eval(node):
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return node.value
+        if isinstance(node, ast.BinOp) and type(node.op) in _CALC_OPS:
+            return _CALC_OPS[type(node.op)](_eval(node.left), _eval(node.right))
+        if isinstance(node, ast.UnaryOp) and type(node.op) in _CALC_OPS:
+            return _CALC_OPS[type(node.op)](_eval(node.operand))
+        raise ValueError("unsupported expression")
+
+    return _eval(ast.parse(expression, mode="eval").body)
 
 
 def docs_store(embeddings) -> Chroma:
@@ -193,7 +195,7 @@ def docs_store(embeddings) -> Chroma:
 
 
 def default_resources():
-    """Env-configured resources, for scripts like kb_ingest.py."""
+    """Env-configured resources, for scripts and tests."""
     return resources(LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, EMBED_API_KEY)
 
 
@@ -236,6 +238,29 @@ def format_docs(docs: list[Document]) -> str:
     )
 
 
+@st.cache_resource
+def tavily_client(api_key: str):
+    from tavily import TavilyClient
+
+    return TavilyClient(api_key=api_key)
+
+
+def web_documents(query: str, api_key: str) -> list[Document]:
+    """Top web results as Documents, labelled by domain for citations."""
+    try:
+        res = tavily_client(api_key).search(query, max_results=WEB_RESULTS)
+    except Exception:
+        log.exception("web search failed")
+        return []
+    docs = []
+    for r in res.get("results", []):
+        domain = urlparse(r.get("url", "")).netloc.replace("www.", "") or "web"
+        docs.append(
+            Document(page_content=r.get("content", ""), metadata={"source": "web", "loc": domain})
+        )
+    return docs
+
+
 def summary_stream(paths: list[str], llm):
     """Yield summary tokens for the first SUMMARY_WORDS words of each file."""
     excerpts = []
@@ -251,15 +276,15 @@ def summary_stream(paths: list[str], llm):
     yield from chain.stream({"excerpts": "\n\n".join(excerpts)})
 
 
-def answer_stream(question: str, history: list[dict], llm, vectorstore: Chroma, kb_store: Chroma):
-    """Yield answer tokens from the LCEL chain: retrieve (docs + kb) -> prompt -> llm."""
+def answer_stream(question: str, history: list[dict], llm, vectorstore: Chroma, tavily_key: str):
+    """Yield answer tokens from the LCEL chain: retrieve (docs + web) -> prompt -> llm."""
     retrievers = {}
     if vectorstore.get(limit=1)["ids"]:
         retrievers["docs"] = vectorstore.as_retriever(search_kwargs={"k": TOP_K})
-    if kb_store.get(limit=1)["ids"]:
-        retrievers["kb"] = kb_store.as_retriever(search_kwargs={"k": KB_TOP_K})
+    if tavily_key:
+        retrievers["web"] = RunnableLambda(lambda q: web_documents(q, tavily_key))
     if not retrievers:
-        yield "No documents indexed yet — upload files and click Submit & analyse first."
+        yield "No documents indexed yet — upload a file, or turn on web search in the sidebar."
         return
     merge = RunnableLambda(lambda hits: format_docs([d for v in hits.values() for d in v]))
     chain = (
@@ -274,23 +299,39 @@ def answer_stream(question: str, history: list[dict], llm, vectorstore: Chroma, 
     yield from chain.stream({"question": question, "history": history})
 
 
-def agent_stream(question: str, history: list[dict], llm, vectorstore: Chroma, kb_store: Chroma):
-    """Agent chat: the LLM picks between document search and the MCP calculator per question."""
+def agent_stream(question: str, history: list[dict], llm, vectorstore: Chroma, tavily_key: str):
+    """Agent chat: the LLM picks between document search, web search and the calculator."""
     from langchain.agents import create_agent
     from langchain_core.messages import AIMessageChunk
     from langchain_core.tools import tool
 
     @tool
     def search_documents(query: str) -> str:
-        """Search the user's uploaded documents and the logistics knowledge base."""
-        docs = []
-        if vectorstore.get(limit=1)["ids"]:
-            docs += vectorstore.similarity_search(query, k=TOP_K)
-        if kb_store.get(limit=1)["ids"]:
-            docs += kb_store.similarity_search(query, k=KB_TOP_K)
-        return format_docs(docs) if docs else "No documents are indexed yet."
+        """Search the user's uploaded documents (PDFs and spreadsheets)."""
+        if not vectorstore.get(limit=1)["ids"]:
+            return "No documents are indexed yet."
+        return format_docs(vectorstore.similarity_search(query, k=TOP_K))
 
-    agent = create_agent(llm, [search_documents, *mcp_tools()], system_prompt=AGENT_PROMPT)
+    @tool
+    def calculate(expression: str) -> str:
+        """Do arithmetic exactly — rates, totals, percentages, GST. E.g. '500 * 12 * 0.18'."""
+        try:
+            return str(safe_calc(expression))
+        except Exception:
+            return f"Couldn't evaluate '{expression}' — use plain arithmetic like 500*12*0.18."
+
+    tools = [search_documents, calculate]
+    if tavily_key:
+
+        @tool
+        def search_web(query: str) -> str:
+            """Search the web for general knowledge, logistics concepts or current info."""
+            docs = web_documents(query, tavily_key)
+            return format_docs(docs) if docs else "No web results found."
+
+        tools.append(search_web)
+
+    agent = create_agent(llm, tools, system_prompt=AGENT_PROMPT)
     log.info("LLM request (agent) | Q: %s", question)
 
     async def tokens():
@@ -311,6 +352,21 @@ def agent_stream(question: str, history: list[dict], llm, vectorstore: Chroma, k
                 break
     finally:
         loop.close()
+
+
+def chat_stream(question: str, history: list[dict], llm, vectorstore: Chroma, tavily_key: str):
+    """Agent (calculator + doc/web search) when the model supports tools; plain chain otherwise."""
+    agent = agent_stream(question, history, llm, vectorstore, tavily_key)
+    try:
+        first = next(agent)  # models without tool support error here, before any output
+    except StopIteration:
+        return
+    except Exception:
+        log.exception("agent unavailable — falling back to the plain RAG chain")
+        yield from answer_stream(question, history, llm, vectorstore, tavily_key)
+        return
+    yield first
+    yield from agent
 
 
 def _detect_header(raw: pd.DataFrame) -> int:
@@ -562,6 +618,14 @@ def main():
         analysis_on = st.toggle(
             "Enable analysis", help="Charts and data previews for uploaded Excel files"
         )
+        has_web = bool(secret("TAVILY_API_KEY"))
+        web_on = st.toggle(
+            "Search the web",
+            value=has_web,
+            disabled=not has_web,
+            help="Answer from live web results (Tavily) alongside your documents. "
+            "Needs TAVILY_API_KEY in secrets or .env.",
+        )
 
     st.title("DocMagic")
     st.caption(
@@ -578,8 +642,9 @@ def main():
             icon=":material/key:",
         )
         st.stop()
-    llm, embeddings, kb_store = resources(llm_key or "no-chat-key", base_url, model, embed_key)
+    llm, embeddings = resources(llm_key or "no-chat-key", base_url, model, embed_key)
     vectorstore = docs_store(embeddings)
+    tavily_key = secret("TAVILY_API_KEY") if web_on else ""
 
     # side-by-side layout when a PDF is uploaded: chat on the left, live preview on the right
     pdfs = [f for f in (files or []) if f.name.lower().endswith(".pdf")]
@@ -675,11 +740,9 @@ def main():
         with main_col:
             st.chat_message("user").markdown(question)
             try:
-                # agent (calculator via MCP) when the server is up; plain RAG chain otherwise
-                stream = agent_stream if mcp_tools() else answer_stream
                 with st.chat_message("assistant"):
                     text = st.write_stream(
-                        stream(question, st.session_state.messages, llm, vectorstore, kb_store)
+                        chat_stream(question, st.session_state.messages, llm, vectorstore, tavily_key)
                     )
             except Exception:  # rate limits & co: tell the user, keep history clean
                 log.exception("answer failed")
@@ -692,41 +755,10 @@ def main():
                 )
                 st.rerun()  # re-render so the new answer shows its feedback buttons
 
-    # sidebar status LAST, so counts reflect this run's ingest instead of the pre-ingest state
+    # sidebar status LAST, so the document count reflects this run's ingest
     with st.sidebar:
-        kb_n = kb_store._collection.count()
         docs_ready = "ready" if vectorstore._collection.count() else "none yet"
-        st.caption(
-            f"Your documents: {docs_ready} · Industry knowledge: {'ready' if kb_n else 'not loaded'}"
-        )
-        if kb_n == 0 and st.button(
-            "Load industry knowledge",
-            icon=":material/school:",
-            width="stretch",
-            help="One-time setup so XEON AI can answer general logistics questions",
-        ):
-            from kb_ingest import ARTICLES, fetch
-
-            try:
-                with st.status("Loading industry knowledge…") as status:
-                    units = []
-                    for title in ARTICLES:
-                        time.sleep(1)  # stay under wikipedia's rate limit
-                        text = fetch(title)
-                        if text:
-                            units.append(
-                                Document(
-                                    page_content=text, metadata={"source": "Wikipedia", "loc": title}
-                                )
-                            )
-                            status.write(title)
-                    kb_store.add_documents(splitter.split_documents(units))
-                    status.update(label="Industry knowledge ready", state="complete")
-            except Exception:
-                log.exception("knowledge base load failed")
-                st.error("Couldn't load industry knowledge — please try again.", icon=":material/error:")
-            else:
-                st.rerun()
+        st.caption(f"Your documents: {docs_ready} · Web search: {'on' if web_on else 'off'}")
 
 
 if __name__ == "__main__":

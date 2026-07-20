@@ -8,7 +8,5 @@ langchain-nvidia-ai-endpoints
 pypdf
 openpyxl
 python-dotenv
-requests
-langchain  # create_agent for the calculator-tool chat agent
-langchain-mcp-adapters
-mcp-server-calculator
+tavily-python  # web search
+langchain  # create_agent for the tool-using chat agent (calculator, doc + web search)
