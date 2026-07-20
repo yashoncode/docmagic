@@ -23,13 +23,15 @@ import streamlit as st
 from dotenv import load_dotenv
 from langchain_chroma import Chroma
 from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableLambda, RunnableParallel, RunnablePassthrough
-from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
+from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings, NVIDIARerank
 from langchain_openai import ChatOpenAI
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from openai import AuthenticationError
 from openpyxl import load_workbook
 
 load_dotenv(override=True)  # .env edits win on rerun
@@ -46,10 +48,12 @@ EMBED_API_KEY = os.getenv("EMBED_API_KEY") or LLM_API_KEY
 # embeddings keep their own endpoint so switching LLM provider can't break them
 EMBED_BASE_URL = os.getenv("EMBED_BASE_URL", "https://integrate.api.nvidia.com/v1")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "nvidia/nemotron-3-embed-1b")
+RERANK_MODEL = os.getenv("RERANK_MODEL", "nvidia/llama-nemotron-rerank-1b-v2")  # reranks hybrid hits
 
 CHUNK_CHARS = 1500  # splitter counts characters; ~250 words
 CHUNK_OVERLAP = 300  # ~50 words
 TOP_K = 5
+FETCH_K = 20  # hybrid candidates pulled per retriever before reranking down to TOP_K
 WEB_RESULTS = 4  # web results pulled per question when web search is on
 MAX_FILES = 2
 SUMMARY_WORDS = 1500  # per file; keeps the summary prompt small and cheap
@@ -239,6 +243,48 @@ def format_docs(docs: list[Document]) -> str:
 
 
 @st.cache_resource
+def reranker(api_key: str):
+    """NVIDIA NIM cross-encoder reranker; runs on the app's free embed key/endpoint."""
+    return NVIDIARerank(model=RERANK_MODEL, base_url=EMBED_BASE_URL, api_key=api_key, top_n=TOP_K)
+
+
+def _fuse(*docsets: list[Document]) -> list[Document]:
+    """Union candidate sets, dropping exact duplicates (same source, loc, text)."""
+    seen, out = set(), []
+    for d in (d for ds in docsets for d in ds):
+        key = (d.metadata.get("source"), d.metadata.get("loc"), d.page_content)
+        if key not in seen:
+            seen.add(key)
+            out.append(d)
+    return out
+
+
+def retrieve_docs(query: str, vectorstore: Chroma, embed_key: str) -> list[Document]:
+    """Hybrid retrieval: vector ∪ BM25 keyword candidates, reranked down to TOP_K.
+
+    Vector search catches paraphrase/semantic matches; BM25 catches exact terms
+    (part numbers, codes, rare words) that embeddings smear. The cross-encoder
+    reranker then scores the union against the query and keeps the best TOP_K.
+    """
+    # ponytail: rebuilds BM25 per query; fine for the ≤2-file session corpus, cache if it grows
+    stored = vectorstore.get()
+    corpus = [
+        Document(page_content=t, metadata=m)
+        for t, m in zip(stored["documents"], stored["metadatas"])
+    ]
+    if not corpus:
+        return []
+    bm25 = BM25Retriever.from_documents(corpus)
+    bm25.k = FETCH_K
+    candidates = _fuse(vectorstore.similarity_search(query, k=FETCH_K), bm25.invoke(query))
+    try:
+        return list(reranker(embed_key).compress_documents(candidates, query))
+    except Exception:
+        log.exception("rerank failed — returning fused candidates")
+        return candidates[:TOP_K]
+
+
+@st.cache_resource
 def tavily_client(api_key: str):
     from tavily import TavilyClient
 
@@ -276,11 +322,13 @@ def summary_stream(paths: list[str], llm):
     yield from chain.stream({"excerpts": "\n\n".join(excerpts)})
 
 
-def answer_stream(question: str, history: list[dict], llm, vectorstore: Chroma, tavily_key: str):
+def answer_stream(
+    question: str, history: list[dict], llm, vectorstore: Chroma, tavily_key: str, embed_key: str
+):
     """Yield answer tokens from the LCEL chain: retrieve (docs + web) -> prompt -> llm."""
     retrievers = {}
     if vectorstore.get(limit=1)["ids"]:
-        retrievers["docs"] = vectorstore.as_retriever(search_kwargs={"k": TOP_K})
+        retrievers["docs"] = RunnableLambda(lambda q: retrieve_docs(q, vectorstore, embed_key))
     if tavily_key:
         retrievers["web"] = RunnableLambda(lambda q: web_documents(q, tavily_key))
     if not retrievers:
@@ -299,7 +347,9 @@ def answer_stream(question: str, history: list[dict], llm, vectorstore: Chroma, 
     yield from chain.stream({"question": question, "history": history})
 
 
-def agent_stream(question: str, history: list[dict], llm, vectorstore: Chroma, tavily_key: str):
+def agent_stream(
+    question: str, history: list[dict], llm, vectorstore: Chroma, tavily_key: str, embed_key: str
+):
     """Agent chat: the LLM picks between document search, web search and the calculator."""
     from langchain.agents import create_agent
     from langchain_core.messages import AIMessageChunk
@@ -308,9 +358,8 @@ def agent_stream(question: str, history: list[dict], llm, vectorstore: Chroma, t
     @tool
     def search_documents(query: str) -> str:
         """Search the user's uploaded documents (PDFs and spreadsheets)."""
-        if not vectorstore.get(limit=1)["ids"]:
-            return "No documents are indexed yet."
-        return format_docs(vectorstore.similarity_search(query, k=TOP_K))
+        hits = retrieve_docs(query, vectorstore, embed_key)
+        return format_docs(hits) if hits else "No documents are indexed yet."
 
     @tool
     def calculate(expression: str) -> str:
@@ -354,16 +403,20 @@ def agent_stream(question: str, history: list[dict], llm, vectorstore: Chroma, t
         loop.close()
 
 
-def chat_stream(question: str, history: list[dict], llm, vectorstore: Chroma, tavily_key: str):
+def chat_stream(
+    question: str, history: list[dict], llm, vectorstore: Chroma, tavily_key: str, embed_key: str
+):
     """Agent (calculator + doc/web search) when the model supports tools; plain chain otherwise."""
-    agent = agent_stream(question, history, llm, vectorstore, tavily_key)
+    agent = agent_stream(question, history, llm, vectorstore, tavily_key, embed_key)
     try:
         first = next(agent)  # models without tool support error here, before any output
     except StopIteration:
         return
+    except AuthenticationError:
+        raise  # bad API key — the plain chain would fail the same way, so surface it
     except Exception:
         log.exception("agent unavailable — falling back to the plain RAG chain")
-        yield from answer_stream(question, history, llm, vectorstore, tavily_key)
+        yield from answer_stream(question, history, llm, vectorstore, tavily_key, embed_key)
         return
     yield first
     yield from agent
@@ -742,8 +795,17 @@ def main():
             try:
                 with st.chat_message("assistant"):
                     text = st.write_stream(
-                        chat_stream(question, st.session_state.messages, llm, vectorstore, tavily_key)
+                        chat_stream(
+                            question, st.session_state.messages, llm, vectorstore, tavily_key, embed_key
+                        )
                     )
+            except AuthenticationError:  # bad/rejected chat key — actionable message
+                log.exception("chat key rejected (401)")
+                st.error(
+                    "Your chat API key was rejected. Check it's a valid key for the selected "
+                    "model (NVIDIA keys start with `nvapi-`) and try again.",
+                    icon=":material/key_off:",
+                )
             except Exception:  # rate limits & co: tell the user, keep history clean
                 log.exception("answer failed")
                 st.error(

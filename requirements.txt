@@ -4,7 +4,8 @@ langchain-openai
 langchain-chroma
 langchain-community
 langchain-text-splitters
-langchain-nvidia-ai-endpoints
+langchain-nvidia-ai-endpoints  # embeddings + reranker (NVIDIARerank)
+rank-bm25  # BM25Retriever backend for hybrid keyword search
 pypdf
 openpyxl
 python-dotenv

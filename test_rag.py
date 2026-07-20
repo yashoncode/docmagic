@@ -80,9 +80,20 @@ def test_header_detection():
     assert df["Qty"].sum() == 55  # numeric dtype restored
 
 
+def test_hybrid_fuse():
+    # the hybrid step unions vector + BM25 hits; the same chunk from both must collapse
+    from app import _fuse
+
+    a = Document(page_content="cross docking", metadata={"source": "x.pdf", "loc": "p.1"})
+    b = Document(page_content="gst on freight", metadata={"source": "x.pdf", "loc": "p.2"})
+    fused = _fuse([a, b], [a])  # 'a' returned by both retrievers
+    assert [d.metadata["loc"] for d in fused] == ["p.1", "p.2"]  # deduped, order preserved
+
+
 if __name__ == "__main__":
     test_splitting()
     test_retrieval_roundtrip()
     test_excel_loader()
     test_header_detection()
+    test_hybrid_fuse()
     print("ok")
