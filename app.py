@@ -48,7 +48,8 @@ EMBED_API_KEY = os.getenv("EMBED_API_KEY") or LLM_API_KEY
 # embeddings keep their own endpoint so switching LLM provider can't break them
 EMBED_BASE_URL = os.getenv("EMBED_BASE_URL", "https://integrate.api.nvidia.com/v1")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "nvidia/nemotron-3-embed-1b")
-RERANK_MODEL = os.getenv("RERANK_MODEL", "nvidia/llama-nemotron-rerank-1b-v2")  # reranks hybrid hits
+RERANK_MODEL = os.getenv("RERANK_MODEL", "nvidia/llama-nemotron-rerank-vl-1b-v2")  # reranks hybrid hits
+RERANK_API_KEY = os.getenv("RERANK_API_KEY", "")  # own key; falls back to the embed key
 
 CHUNK_CHARS = 1500  # splitter counts characters; ~250 words
 CHUNK_OVERLAP = 300  # ~50 words
@@ -278,7 +279,7 @@ def retrieve_docs(query: str, vectorstore: Chroma, embed_key: str) -> list[Docum
     bm25.k = FETCH_K
     candidates = _fuse(vectorstore.similarity_search(query, k=FETCH_K), bm25.invoke(query))
     try:
-        return list(reranker(embed_key).compress_documents(candidates, query))
+        return list(reranker(RERANK_API_KEY or embed_key).compress_documents(candidates, query))
     except Exception:
         log.exception("rerank failed — returning fused candidates")
         return candidates[:TOP_K]

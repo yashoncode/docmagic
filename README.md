@@ -24,7 +24,7 @@ spreadsheets into charts on request.
 ## Features
 
 - **Cited answers** — responses quote the exact source, e.g. `[rate_card.xlsx Rates]` or `[sop.pdf p.3]`, and the model answers only from retrieved context.
-- **Hybrid retrieval + reranking** — dense vector search (semantic meaning) is fused with BM25 keyword search (exact terms like SKU codes and lane names), then a NVIDIA cross-encoder reranker (`llama-nemotron-rerank-1b-v2`) re-scores the merged candidates and keeps the most relevant — noticeably higher precision than vector search alone.
+- **Hybrid retrieval + reranking** — dense vector search (semantic meaning) is fused with BM25 keyword search (exact terms like SKU codes and lane names), then a NVIDIA cross-encoder reranker (`llama-nemotron-rerank-vl-1b-v2`) re-scores the merged candidates and keeps the most relevant — noticeably higher precision than vector search alone.
 - **PDF and Excel ingestion** — page-level parsing for PDFs, sheet-level for spreadsheets, with automatic detection of header rows buried under title/metadata blocks.
 - **Agentic tool use** — a tool-calling agent chooses per question between document search, live **web search** (Tavily), and an exact in-process **calculator** for rates, totals and GST; it falls back to a plain retrieval chain on models without tool support.
 - **Conversational analytics** — describe a chart in natural language ("pie of shipments by status") and DocMagic renders it; bar, line, area, scatter and pie are supported.
@@ -77,7 +77,7 @@ flowchart TD
 | Vector store | Chroma (local, persistent) |
 | Retrieval | Hybrid vector + BM25 (`rank-bm25`), cross-encoder reranked |
 | Embeddings | NVIDIA NIM — `nemotron-3-embed-1b` |
-| Reranker | NVIDIA NIM — `llama-nemotron-rerank-1b-v2` |
+| Reranker | NVIDIA NIM — `llama-nemotron-rerank-vl-1b-v2` |
 | LLM | NVIDIA NIM — `nemotron-3-super` (default); any OpenAI-compatible model |
 | Agent & tools | LangChain `create_agent` — document search, web search, calculator |
 | Web search | Tavily |
@@ -112,7 +112,8 @@ can also be pasted in the sidebar at runtime.
 | `EMBED_API_KEY` | API key for embeddings | falls back to `LLM_API_KEY` |
 | `EMBED_BASE_URL` | Embeddings endpoint | `https://integrate.api.nvidia.com/v1` |
 | `EMBED_MODEL` | Embedding model id | `nvidia/nemotron-3-embed-1b` |
-| `RERANK_MODEL` | Reranker model id (runs on the embed key/endpoint) | `nvidia/llama-nemotron-rerank-1b-v2` |
+| `RERANK_MODEL` | Reranker model id | `nvidia/llama-nemotron-rerank-vl-1b-v2` |
+| `RERANK_API_KEY` | API key for the reranker | falls back to `EMBED_API_KEY` |
 | `TAVILY_API_KEY` | Enables the web-search tool (optional) | _unset_ |
 
 ## Deployment
