@@ -10,4 +10,5 @@ pypdf
 openpyxl
 python-dotenv
 tavily-python  # web search
+langfuse  # LLM tracing (gated on LANGFUSE_* keys)
 langchain  # create_agent for the tool-using chat agent (calculator, doc + web search)

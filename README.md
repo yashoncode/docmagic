@@ -30,6 +30,7 @@ spreadsheets into charts on request.
 - **Conversational analytics** — describe a chart in natural language ("pie of shipments by status") and DocMagic renders it; bar, line, area, scatter and pie are supported.
 - **Live document preview** — uploaded PDFs render side-by-side with the chat.
 - **Feedback loop** — thumbs up/down on every answer, logged for later review.
+- **Tracing** — optional [Langfuse](https://langfuse.com) instrumentation captures every LLM call, tool use and retrieval as a trace; automatically enabled when `LANGFUSE_*` keys are present, a no-op otherwise.
 - **Session isolation** — each visitor's uploaded documents are private to their session.
 - **Provider-agnostic** — runs on any OpenAI-compatible endpoint; the chat model is selectable at runtime and the API key can be supplied by the operator or pasted per user.
 - **Production hardening** — runtime secrets, upload limits, session-scoped storage, sanitised error handling with server-side logging, and no third-party telemetry.
@@ -81,6 +82,7 @@ flowchart TD
 | LLM | NVIDIA NIM — `nemotron-3-super` (default); any OpenAI-compatible model |
 | Agent & tools | LangChain `create_agent` — document search, web search, calculator |
 | Web search | Tavily |
+| Tracing | Langfuse (optional) |
 | Data & charts | pandas, Vega/Altair |
 
 ## Getting started
@@ -115,6 +117,9 @@ can also be pasted in the sidebar at runtime.
 | `RERANK_MODEL` | Reranker model id | `nvidia/llama-nemotron-rerank-vl-1b-v2` |
 | `RERANK_API_KEY` | API key for the reranker | falls back to `EMBED_API_KEY` |
 | `TAVILY_API_KEY` | Enables the web-search tool (optional) | _unset_ |
+| `LANGFUSE_PUBLIC_KEY` | Enables Langfuse tracing (optional) | _unset_ |
+| `LANGFUSE_SECRET_KEY` | Langfuse secret key (required with the public key) | _unset_ |
+| `LANGFUSE_BASE_URL` | Langfuse host | `https://cloud.langfuse.com` |
 
 ## Deployment
 

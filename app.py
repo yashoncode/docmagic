@@ -100,6 +100,13 @@ AGENT_PROMPT = SYSTEM_PROMPT + (
     "cite document excerpts by file and web results by domain."
 )
 
+# friendly hint shown in the chat while the agent runs a tool (keyed by tool name)
+TOOL_STATUS = {
+    "search_documents": ":material/search: Searching your documents…",
+    "search_web": ":material/travel_explore: Searching the web…",
+    "calculate": ":material/calculate: Calculating…",
+}
+
 # splits on paragraphs first, then lines, then words — chunks end at natural
 # boundaries instead of mid-sentence
 splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_CHARS, chunk_overlap=CHUNK_OVERLAP)
@@ -292,6 +299,30 @@ def tavily_client(api_key: str):
     return TavilyClient(api_key=api_key)
 
 
+@st.cache_resource
+def langfuse_handler():
+    """Langfuse tracing callback, or None if keys are unset or the SDK can't init.
+
+    v4's CallbackHandler reads creds from the global client (env vars
+    LANGFUSE_PUBLIC_KEY / _SECRET_KEY / _HOST or _BASE_URL) — no args needed.
+    """
+    if not (secret("LANGFUSE_PUBLIC_KEY") and secret("LANGFUSE_SECRET_KEY")):
+        return None
+    try:
+        from langfuse.langchain import CallbackHandler
+
+        return CallbackHandler()
+    except Exception:
+        log.exception("Langfuse tracing disabled — handler init failed")
+        return None
+
+
+def trace_config() -> dict:
+    """LangChain run config that attaches Langfuse tracing when it's configured."""
+    handler = langfuse_handler()
+    return {"callbacks": [handler]} if handler else {}
+
+
 def web_documents(query: str, api_key: str) -> list[Document]:
     """Top web results as Documents, labelled by domain for citations."""
     try:
@@ -320,7 +351,7 @@ def summary_stream(paths: list[str], llm):
         excerpts.append(f"## {os.path.basename(path)}\n{' '.join(words[:SUMMARY_WORDS])}")
     log.info("LLM request | summarise: %s", [os.path.basename(p) for p in paths])
     chain = SUMMARY_PROMPT | llm | StrOutputParser()
-    yield from chain.stream({"excerpts": "\n\n".join(excerpts)})
+    yield from chain.stream({"excerpts": "\n\n".join(excerpts)}, config=trace_config())
 
 
 def answer_stream(
@@ -345,7 +376,7 @@ def answer_stream(
         | StrOutputParser()
     )
     log.info("LLM request | Q: %s", question)
-    yield from chain.stream({"question": question, "history": history})
+    yield from chain.stream({"question": question, "history": history}, config=trace_config())
 
 
 def agent_stream(
@@ -384,12 +415,20 @@ def agent_stream(
     agent = create_agent(llm, tools, system_prompt=AGENT_PROMPT)
     log.info("LLM request (agent) | Q: %s", question)
 
+    cfg = trace_config()
+
     async def tokens():
         async for chunk, _ in agent.astream(
             {"messages": [*history, {"role": "user", "content": question}]},
             stream_mode="messages",
+            config=cfg,
         ):
-            if isinstance(chunk, AIMessageChunk) and isinstance(chunk.content, str) and chunk.content:
+            if not isinstance(chunk, AIMessageChunk):
+                continue
+            for tc in chunk.tool_call_chunks or []:  # the model just picked a tool to run
+                if tc.get("name"):
+                    yield {"status": TOOL_STATUS.get(tc["name"], ":material/bolt: Working…")}
+            if isinstance(chunk.content, str) and chunk.content:
                 yield chunk.content
 
     # st.write_stream is sync; drive the async agent one token at a time on a private loop
@@ -511,7 +550,7 @@ def sheet_chart(df: pd.DataFrame):
 def chart_spec(question: str, columns: str, model_id: str, _llm) -> dict:
     """User's chart request -> validated-later JSON spec (cached per question)."""
     chain = CHART_SPEC_PROMPT | _llm | JsonOutputParser()
-    return chain.invoke({"question": question, "columns": columns})
+    return chain.invoke({"question": question, "columns": columns}, config=trace_config())
 
 
 def render_custom_chart(df: pd.DataFrame, spec: dict):
@@ -618,6 +657,32 @@ def log_feedback(idx: int):
         log.info("feedback %s logged", record["rating"])
     except Exception:
         log.exception("feedback log failed")
+
+
+def stream_answer(events) -> str:
+    """Render the chat stream: a live status hint (thinking → searching/calculating →
+    writing) above the answer, then the answer streamed token by token. Returns the text."""
+    status = st.status("Thinking…", type="compact")
+    placeholder, parts, answering = None, [], False
+    for ev in events:
+        if isinstance(ev, dict):  # a tool-activity hint from the agent
+            if not answering:
+                status.update(label=ev["status"])
+            continue
+        parts.append(ev)
+        if not answering:
+            if not "".join(parts).strip():
+                continue  # ignore whitespace the model emits before the real answer
+            answering = True
+            status.update(label=":material/edit_note: Writing the answer…")
+            placeholder = st.empty()
+        placeholder.markdown("".join(parts))
+    text = "".join(parts).strip()
+    if placeholder is None:  # nothing streamed back
+        placeholder = st.empty()
+    placeholder.markdown(text)
+    status.update(label="Done", state="complete")
+    return text
 
 
 def main():
@@ -795,7 +860,7 @@ def main():
             st.chat_message("user").markdown(question)
             try:
                 with st.chat_message("assistant"):
-                    text = st.write_stream(
+                    text = stream_answer(
                         chat_stream(
                             question, st.session_state.messages, llm, vectorstore, tavily_key, embed_key
                         )
