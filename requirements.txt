@@ -1,7 +1,10 @@
-streamlit[pdf]
+fastapi
+uvicorn[standard]  # ASGI server
+python-multipart  # multipart file uploads
+sse-starlette  # Server-Sent Events for the chat + upload streams
 pandas
+sqlalchemy  # engine for the analytics schema + df.to_sql
 langchain-openai
-langchain-chroma
 langchain-community
 langchain-text-splitters
 langchain-nvidia-ai-endpoints  # embeddings + reranker (NVIDIARerank)
@@ -11,4 +14,7 @@ openpyxl
 python-dotenv
 tavily-python  # web search
 langfuse  # LLM tracing (gated on LANGFUSE_* keys)
-langchain  # create_agent for the tool-using chat agent (calculator, doc + web search)
+langchain  # create_agent for the tool-using chat specialists
+langgraph  # StateGraph: chat supervisor/router + ingestion pipeline
+langchain-postgres  # PGVector store (pgvector on hosted Postgres)
+psycopg[binary]  # Postgres driver for langchain-postgres

@@ -6,3 +6,4 @@ chroma_db/
 CLAUDE.md
 feedback.jsonl
 .streamlit/secrets.toml
+node_modules

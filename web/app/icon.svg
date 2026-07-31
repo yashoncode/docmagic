@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="8" fill="#2f6feb" />
+  <!-- document with a folded corner -->
+  <path
+    d="M11 7h7.5L23 11.5V24a1 1 0 0 1-1 1H11a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1Z"
+    fill="#fff"
+    fill-opacity="0.95"
+  />
+  <path d="M18.5 7 23 11.5h-4.5V7Z" fill="#2f6feb" fill-opacity="0.35" />
+  <!-- the "magic": a four-point spark over the page -->
+  <path
+    d="M16.5 13.5l1.15 2.85 2.85 1.15-2.85 1.15-1.15 2.85-1.15-2.85-2.85-1.15 2.85-1.15 1.15-2.85Z"
+    fill="#2f6feb"
+  />
+</svg>

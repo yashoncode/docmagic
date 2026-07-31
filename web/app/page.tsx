@@ -1,0 +1,285 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { AlertCircle, Loader2, Sparkles, X } from "lucide-react";
+import TopBar from "@/components/topbar";
+import DocPanel from "@/components/doc-panel";
+import Chat from "@/components/chat";
+import AnalysisView from "@/components/analysis-view";
+import ExportPdf from "@/components/export-pdf";
+import {
+  askChat,
+  getConfig,
+  sse,
+  uploadFiles,
+  INGEST_STEPS,
+  STATUS,
+  type Config,
+  type IngestResult,
+  type Msg,
+} from "@/lib/api";
+
+export default function Page() {
+  const [config, setConfig] = useState<Config | null>(null);
+  const [fatal, setFatal] = useState<string | null>(null);
+
+  const [apiKey, setApiKey] = useState("");
+  const [model, setModel] = useState(""); // server-configured; no picker
+  const [baseUrl, setBaseUrl] = useState("");
+
+  const [files, setFiles] = useState<File[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [ingestStatus, setIngestStatus] = useState<string | null>(null);
+  const [ingest, setIngest] = useState<IngestResult | null>(null);
+  const [hasDocs, setHasDocs] = useState(false);
+
+  const [messages, setMessages] = useState<Msg[]>([]);
+  const [status, setStatus] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    getConfig()
+      .then((c) => {
+        setConfig(c);
+        setModel(c.defaultModel);
+        setBaseUrl(c.baseUrl);
+      })
+      .catch((e) => setFatal(e.message));
+  }, []);
+
+  async function analyse() {
+    if (!config || files.length === 0) return;
+    setUploading(true);
+    setError(null);
+    setIngest(null);
+    setIngestStatus("Reading your documents…");
+    setMessages([]); // old chat referred to old documents
+    try {
+      const res = await uploadFiles(files, { key: apiKey, model, baseUrl });
+      for await (const { event, data } of sse(res)) {
+        if (event === "ingested") {
+          setHasDocs(data.chunks > 0);
+        } else if (event === "node") {
+          setIngestStatus(INGEST_STEPS[data.name] ?? "Working…");
+        } else if (event === "result") {
+          if (data.reason === "no_text") {
+            setError(
+              "I couldn't find readable text in those files — a scanned or image-only PDF has no text layer to read.",
+            );
+          } else if (data.reason === "no_key") {
+            setError("Documents indexed. Add your API key to chat and get an analysis.");
+          } else {
+            setIngest(data as IngestResult);
+          }
+        } else if (event === "error") {
+          setError(data.message);
+        }
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Upload failed.");
+    } finally {
+      setUploading(false);
+      setIngestStatus(null);
+    }
+  }
+
+  async function send(question: string) {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    setStatus("Thinking…");
+    const history = messages.map((m) => ({ role: m.role, content: m.content }));
+    setMessages((m) => [
+      ...m,
+      { role: "user", content: question },
+      { role: "assistant", content: "" },
+    ]);
+    try {
+      const res = await askChat({
+        question, history, model, baseUrl, key: apiKey, webOn: true, hasDocs,
+      });
+      for await (const { event, data } of sse(res)) {
+        if (event === "status") {
+          const key = data.stage ?? data.tool ?? data.route;
+          setStatus((key && STATUS[key]) || "Working…");
+        } else if (event === "token") {
+          setStatus(null);
+          setMessages((m) => {
+            const next = [...m];
+            const last = next[next.length - 1];
+            // models often emit leading whitespace before the real answer
+            const content = last.content ? last.content + data.text : data.text.trimStart();
+            next[next.length - 1] = { ...last, content };
+            return next;
+          });
+        } else if (event === "error") {
+          setError(data.message);
+        }
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Sorry, I hit a snag answering that.");
+    } finally {
+      setBusy(false);
+      setStatus(null);
+      // drop the placeholder if nothing streamed back
+      setMessages((m) =>
+        m.length && m[m.length - 1].role === "assistant" && !m[m.length - 1].content
+          ? m.slice(0, -1)
+          : m,
+      );
+    }
+  }
+
+  if (fatal) {
+    return (
+      <main className="grid min-h-dvh place-items-center p-6 text-center">
+        <div>
+          <AlertCircle className="mx-auto size-7 text-muted" aria-hidden />
+          <p className="display mt-3 text-lg">{fatal}</p>
+          <p className="meta mt-2 text-muted">uvicorn api:app --reload --port 8000</p>
+        </div>
+      </main>
+    );
+  }
+
+  if (!config) {
+    return (
+      <main className="grid min-h-dvh place-items-center">
+        <span className="meta pulse text-muted">loading…</span>
+      </main>
+    );
+  }
+
+  return (
+    <div className="min-h-dvh">
+      <TopBar
+        config={config}
+        apiKey={apiKey}
+        setApiKey={setApiKey}
+        baseUrl={baseUrl}
+        setBaseUrl={setBaseUrl}
+      />
+
+      {/* headline row — eyebrow + title left, live status + primary action right */}
+      <div className="no-print shrink-0 px-4 pt-6 pb-4 sm:px-6">
+        <div className="flex flex-wrap items-end gap-x-6 gap-y-3">
+          <div className="min-w-0">
+            <p className="eyebrow text-accent">Document intelligence</p>
+            <h1 className="display mt-1.5 text-[26px] sm:text-[30px]">
+              Ask your documents anything
+            </h1>
+          </div>
+
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <span className="meta hidden items-center gap-1.5 text-muted md:inline-flex">
+              <span
+                className={`size-1.5 rounded-full ${
+                  uploading ? "animate-pulse bg-accent" : hasDocs ? "bg-success" : "bg-border-strong"
+                }`}
+              />
+              {ingestStatus ?? (hasDocs ? "documents indexed" : "no documents yet")}
+            </span>
+            <span className="meta hidden text-muted lg:inline">·</span>
+            <span className="meta hidden text-muted lg:inline">
+              {files.length}/{config.maxFiles} files
+            </span>
+            {ingest && <ExportPdf />}
+            <button
+              type="button"
+              onClick={analyse}
+              disabled={uploading || files.length === 0}
+              className="btn btn-primary ml-1"
+            >
+              {uploading ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden />
+              ) : (
+                <Sparkles className="size-4" aria-hidden />
+              )}
+              {uploading ? "Analysing…" : "Analyse"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {!config.dbReady && (
+        <div className="no-print mx-4 mb-3 shrink-0 rounded-lg border border-border bg-surface px-3 py-2.5 text-[13px] sm:mx-6">
+          <p className="flex items-center gap-2 font-medium">
+            <AlertCircle className="size-4 shrink-0 text-accent" aria-hidden />
+            Setup needed — <code className="meta">POSTGRES_URL</code> isn&apos;t set
+          </p>
+          <p className="mt-1 pl-6 text-xs leading-relaxed text-muted">
+            Upload and chat need Postgres with the <code className="meta">vector</code>{" "}
+            extension. Grab a free database from{" "}
+            <a
+              href="https://supabase.com"
+              target="_blank"
+              rel="noreferrer"
+              className="text-accent underline underline-offset-2"
+            >
+              Supabase
+            </a>{" "}
+            or{" "}
+            <a
+              href="https://neon.tech"
+              target="_blank"
+              rel="noreferrer"
+              className="text-accent underline underline-offset-2"
+            >
+              Neon
+            </a>
+            , add it to <code className="meta">.env</code>, and restart the API. Your API
+            keys are already configured.
+          </p>
+        </div>
+      )}
+
+      {error && (
+        <div className="rise no-print mx-4 mb-3 flex shrink-0 items-start gap-2 rounded-lg border border-border bg-surface px-3 py-2.5 text-[13px] sm:mx-6">
+          <AlertCircle className="mt-0.5 size-4 shrink-0 text-muted" aria-hidden />
+          <p className="flex-1">{error}</p>
+          <button
+            type="button"
+            onClick={() => setError(null)}
+            aria-label="Dismiss"
+            className="text-muted hover:text-foreground"
+          >
+            <X className="size-4" aria-hidden />
+          </button>
+        </div>
+      )}
+
+      {/* Workspace: upload and conversation stay together; analysis follows below. */}
+      <main className="space-y-4 px-4 pb-4 sm:px-6 sm:pb-6">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
+          <DocPanel
+            files={files}
+            setFiles={setFiles}
+            maxFiles={config.maxFiles}
+            analysed={hasDocs}
+            busy={uploading}
+            sheets={ingest?.sheets ?? []}
+          />
+
+          <section className="panel no-print flex min-h-[560px] flex-col">
+            <div className="panel-head">
+              <span className="eyebrow text-muted">Conversation</span>
+            </div>
+            <Chat
+              messages={messages}
+              status={status}
+              busy={busy}
+              suggestions={config.suggestions}
+              model={model}
+              onSend={send}
+            />
+          </section>
+        </div>
+
+        {ingest && (
+          <AnalysisView ingest={ingest} model={model} baseUrl={baseUrl} apiKey={apiKey} />
+        )}
+      </main>
+    </div>
+  );
+}
