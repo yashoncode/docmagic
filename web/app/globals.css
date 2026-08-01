@@ -1,35 +1,64 @@
 @import "tailwindcss";
 
+/* Glass palette. --background is the only opaque colour: it paints the page canvas
+   that the aurora and every translucent surface above it are read against. Surfaces
+   and borders are alpha tints, so `bg-surface` / `border-border` are glass already. */
 :root {
-  --background: #ffffff;
-  --surface: #f7f8fa;
-  --surface-2: #fbfcfd;
-  --border: #e7e9ee;
-  --border-strong: #d8dce4;
+  /* Without this the UA paints native control text with its own `fieldtext`
+     (near-black), which is invisible on the dark palette. Also fixes the
+     scrollbar and dropdown chrome. */
+  color-scheme: light;
+
+  --background: #f2f4f9;
+  --surface: rgb(15 23 42 / 0.045);
+  --surface-2: rgb(15 23 42 / 0.022);
+  --border: rgb(15 23 42 / 0.09);
+  --border-strong: rgb(15 23 42 / 0.2);
   --foreground: #0b0d12;
-  --muted: #6b7280;
+  --muted: #5b6473;
   --accent: #2f6feb;
   --accent-hover: #2560d8;
-  --accent-soft: #eef4ff;
+  --accent-soft: rgb(47 111 235 / 0.11);
   --success: #17994f;
-  --success-soft: #e8f7ee;
+  --success-soft: rgb(23 153 79 / 0.13);
+
+  /* frosted panes: fill, the sheen along their top edge, and the shadow they cast */
+  --glass: rgb(255 255 255 / 0.55);
+  --glass-2: rgb(255 255 255 / 0.4);
+  /* popovers float over arbitrary content, so they frost far more heavily than a panel */
+  --glass-solid: rgb(255 255 255 / 0.97);
+  --surface-solid: #eef0f6;
+  --sheen: rgb(255 255 255 / 0.7);
+  --shadow: 0 10px 34px -12px rgb(15 23 42 / 0.18);
+  --shadow-lift: 0 16px 40px -14px rgb(15 23 42 / 0.28);
+  --blur: 20px;
 }
 
 /* layout.tsx stamps data-theme before paint (stored choice, else the OS preference),
    so one dark block covers both the toggle and the system default */
 :root[data-theme="dark"] {
-  --background: #0a0b0d;
-  --surface: #111317;
-  --surface-2: #0e1013;
-  --border: #22262e;
-  --border-strong: #2f343d;
+  color-scheme: dark;
+
+  --background: #08090c;
+  --surface: rgb(255 255 255 / 0.055);
+  --surface-2: rgb(255 255 255 / 0.028);
+  --border: rgb(255 255 255 / 0.1);
+  --border-strong: rgb(255 255 255 / 0.22);
   --foreground: #eceef2;
   --muted: #8b93a1;
   --accent: #4c8bff;
   --accent-hover: #6b9fff;
-  --accent-soft: #142545;
+  --accent-soft: rgb(76 139 255 / 0.18);
   --success: #35c273;
-  --success-soft: #0f2a1c;
+  --success-soft: rgb(53 194 115 / 0.16);
+
+  --glass: rgb(24 27 34 / 0.55);
+  --glass-2: rgb(255 255 255 / 0.035);
+  --glass-solid: rgb(20 23 29 / 0.98);
+  --surface-solid: #1b1f27;
+  --sheen: rgb(255 255 255 / 0.09);
+  --shadow: 0 10px 34px -12px rgb(0 0 0 / 0.6);
+  --shadow-lift: 0 16px 44px -14px rgb(0 0 0 / 0.75);
 }
 
 @theme inline {
@@ -55,6 +84,31 @@ body {
   color: var(--foreground);
   font-family: var(--font-inter), system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
+}
+
+/* The aurora every frosted surface is read against. Fixed and z-indexed under the
+   content but over the page canvas, so it costs nothing in layout. Only `transform`
+   animates, which keeps the drift on the compositor. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: -25%;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(38% 42% at 18% 22%, rgb(47 111 235 / 0.28), transparent 70%),
+    radial-gradient(34% 38% at 82% 14%, rgb(139 92 246 / 0.22), transparent 70%),
+    radial-gradient(40% 44% at 74% 84%, rgb(14 165 165 / 0.2), transparent 70%),
+    radial-gradient(30% 34% at 30% 88%, rgb(226 160 63 / 0.16), transparent 70%);
+  animation: drift 34s ease-in-out infinite alternate;
+}
+
+:root[data-theme="dark"] body::before {
+  background:
+    radial-gradient(38% 42% at 18% 22%, rgb(76 139 255 / 0.26), transparent 70%),
+    radial-gradient(34% 38% at 82% 14%, rgb(139 92 246 / 0.2), transparent 70%),
+    radial-gradient(40% 44% at 74% 84%, rgb(14 165 165 / 0.18), transparent 70%),
+    radial-gradient(30% 34% at 30% 88%, rgb(226 160 63 / 0.12), transparent 70%);
 }
 
 /* Component classes live in the components layer so Tailwind utilities beat them.
@@ -88,11 +142,42 @@ body {
 
 /* ---------- surfaces ---------- */
 
+/* The frosted pane. `inset 0 1px 0 var(--sheen)` is the lit top edge that reads as
+   a glass bevel; without it a blurred translucent box just looks washed out. */
 .panel {
   border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--background);
+  border-radius: 16px;
+  background: var(--glass);
+  backdrop-filter: blur(var(--blur)) saturate(180%);
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(180%);
+  box-shadow:
+    inset 0 1px 0 var(--sheen),
+    var(--shadow);
   overflow: hidden;
+  transition:
+    box-shadow 0.3s ease,
+    border-color 0.3s ease;
+}
+.panel:hover {
+  box-shadow:
+    inset 0 1px 0 var(--sheen),
+    var(--shadow-lift);
+}
+
+/* an inner content well — same glass, one step lighter, no shadow */
+.well {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--glass-2);
+  backdrop-filter: blur(12px) saturate(150%);
+  -webkit-backdrop-filter: blur(12px) saturate(150%);
+}
+
+/* sticky table heads sit over scrolling rows, so they blur instead of going see-through */
+.sticky-head {
+  background: var(--glass);
+  backdrop-filter: blur(14px) saturate(180%);
+  -webkit-backdrop-filter: blur(14px) saturate(180%);
 }
 
 .panel-head {
@@ -100,6 +185,7 @@ body {
   align-items: center;
   gap: 0.5rem;
   border-bottom: 1px solid var(--border);
+  background: linear-gradient(to bottom, var(--surface-2), transparent);
   padding: 0.625rem 0.875rem;
   min-height: 46px;
 }
@@ -110,6 +196,9 @@ body {
   gap: 0.375rem;
   border: 1px solid var(--border);
   border-radius: 999px;
+  background: var(--glass-2);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   padding: 0.1875rem 0.5rem;
   font-family: var(--font-mono-jb), monospace;
   font-size: 10px;
@@ -117,18 +206,55 @@ body {
   text-transform: uppercase;
   color: var(--muted);
   white-space: nowrap;
+  transition:
+    transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1),
+    border-color 0.2s ease,
+    color 0.2s ease;
+}
+button.chip:hover {
+  transform: translateY(-1px);
+  color: var(--foreground);
 }
 
 .chip-ok {
-  border-color: transparent;
+  border-color: rgb(23 153 79 / 0.25);
   background: var(--success-soft);
   color: var(--success);
 }
 
 .chip-accent {
-  border-color: transparent;
+  border-color: rgb(47 111 235 / 0.25);
   background: var(--accent-soft);
   color: var(--accent);
+}
+
+/* Popovers (settings, export) are `.panel`s floating over the page, not over a
+   known backdrop — a panel's 55% fill leaves their text unreadable. Near-opaque,
+   still frosted, and they scale in from the trigger. */
+[popover].panel {
+  background: var(--glass-solid);
+  border-color: var(--border-strong);
+  box-shadow:
+    inset 0 1px 0 var(--sheen),
+    var(--shadow-lift);
+}
+[popover]:popover-open {
+  animation: pop 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* the popover is already near-opaque, so a 3%-alpha control inside it reads as
+   nothing at all — inputs there take a solid fill and a visible edge */
+[popover] .field {
+  background: var(--surface-solid);
+  border-color: var(--border-strong);
+}
+
+/* the frosted brand bar — glass needs its own fill, the header has no panel behind it */
+.glass-bar {
+  background: var(--glass);
+  backdrop-filter: blur(var(--blur)) saturate(180%);
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(180%);
+  box-shadow: inset 0 -1px 0 var(--border);
 }
 
 /* a fullscreened chart keeps the app's palette instead of the UA's black */
@@ -136,6 +262,13 @@ body {
   background: var(--background);
   padding: 1.5rem;
   overflow: auto;
+}
+
+/* a fullscreened panel brings its own head and padding, so it goes edge to edge */
+.panel:fullscreen {
+  padding: 0;
+  border: none;
+  border-radius: 0;
 }
 
 /* the theme toggle ships both icons; the active theme hides one */
@@ -149,15 +282,38 @@ body {
 .field {
   width: 100%;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--background);
+  border-radius: 10px;
+  color: var(--foreground);
+  background: var(--glass-2);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   padding: 0.4375rem 0.625rem;
   font-size: 13px;
   outline: none;
-  transition: border-color 0.12s;
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    background 0.2s ease;
+}
+.field::placeholder {
+  color: var(--muted);
+  opacity: 1; /* Firefox dims placeholders again on top of the colour */
+}
+
+/* A select's drop-down list is painted by the browser from the control's own colours,
+   and `.field`'s 3.5%-alpha fill leaves the options dark on dark. They need an opaque
+   pair of their own — the glass stays on the closed control. */
+.field option,
+.field optgroup {
+  background: var(--surface-solid);
+  color: var(--foreground);
+}
+.field:hover {
+  border-color: var(--border-strong);
 }
 .field:focus {
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .btn {
@@ -165,43 +321,74 @@ body {
   align-items: center;
   justify-content: center;
   gap: 0.4375rem;
-  border-radius: 9px;
+  border-radius: 11px;
   font-size: 13px;
   font-weight: 500;
   padding: 0.5rem 0.875rem;
+  /* transform + shadow carry the hover lift; keep them on the compositor */
   transition:
-    background 0.12s,
-    border-color 0.12s,
-    opacity 0.12s;
+    background 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 0.2s ease;
   white-space: nowrap;
+  /* every button is frosted: the blur is on the base class, variants only set fill */
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
 }
 .btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
+.btn:not(:disabled):active {
+  transform: translateY(0) scale(0.97);
+  transition-duration: 0.06s;
+}
+/* tinted glass, not a solid slab — the aurora still reads through the accent */
 .btn-primary {
-  background: var(--accent);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 82%, transparent),
+    color-mix(in srgb, var(--accent-hover) 92%, transparent)
+  );
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
   color: #fff;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.3),
+    0 6px 18px -8px var(--accent);
 }
 .btn-primary:not(:disabled):hover {
-  background: var(--accent-hover);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 92%, transparent),
+    var(--accent-hover)
+  );
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.36),
+    0 12px 26px -10px var(--accent);
 }
 .btn-ghost {
   border: 1px solid var(--border);
+  background: var(--glass-2);
   color: var(--foreground);
+  box-shadow: inset 0 1px 0 var(--sheen);
 }
 .btn-ghost:not(:disabled):hover {
   border-color: var(--border-strong);
   background: var(--surface);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow);
 }
 
-/* tab underline, as in the reference */
+/* tab underline, as in the reference — it wipes in rather than snapping */
 .tab {
   position: relative;
   padding: 0.75rem 0.125rem;
   font-size: 13px;
   color: var(--muted);
-  transition: color 0.12s;
+  transition: color 0.2s ease;
 }
 .tab:hover {
   color: var(--foreground);
@@ -210,13 +397,19 @@ body {
   color: var(--accent);
   font-weight: 500;
 }
-.tab[data-active="true"]::after {
+.tab::after {
   content: "";
   position: absolute;
   inset-inline: 0;
   bottom: -1px;
   height: 2px;
+  border-radius: 2px;
   background: var(--accent);
+  transform: scaleX(0);
+  transition: transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.tab[data-active="true"]::after {
+  transform: scaleX(1);
 }
 
 }
@@ -309,6 +502,47 @@ body {
   font-weight: 600;
 }
 
+/* ---------- vega chrome ---------- */
+
+/* vega-embed injects its own unlayered stylesheet with a hardcoded white menu, so
+   these overrides must stay unlayered too — a layered rule loses to it whatever its
+   specificity. `display: block` also drops the inline-block baseline gap under charts. */
+.vega-embed {
+  display: block;
+}
+.vega-embed summary {
+  background: var(--glass-solid);
+  color: var(--foreground);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: none;
+}
+.vega-embed .vega-actions {
+  background: var(--glass-solid);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lift);
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
+}
+.vega-embed .vega-actions a {
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--foreground);
+}
+.vega-embed .vega-actions a:hover,
+.vega-embed .vega-actions a:focus {
+  background: var(--surface);
+  color: var(--accent);
+}
+.vega-embed .vega-actions::before {
+  border-bottom-color: var(--border-strong);
+}
+.vega-embed .vega-actions::after {
+  border-bottom-color: var(--glass-solid);
+}
+
 /* ---------- motion ---------- */
 
 @keyframes blink {
@@ -323,21 +557,91 @@ body {
 @keyframes rise {
   from {
     opacity: 0;
-    transform: translateY(4px);
+    transform: translateY(10px);
+    filter: blur(6px);
   }
 }
 .rise {
-  animation: rise 0.18s ease-out;
+  animation: rise 0.38s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+.pop {
+  animation: pop 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+/* children arrive one after another instead of all at once */
+.stagger > * {
+  animation: rise 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.stagger > *:nth-child(2) { animation-delay: 0.05s; }
+.stagger > *:nth-child(3) { animation-delay: 0.1s; }
+.stagger > *:nth-child(4) { animation-delay: 0.15s; }
+.stagger > *:nth-child(5) { animation-delay: 0.2s; }
+.stagger > *:nth-child(n + 6) { animation-delay: 0.25s; }
+
+/* a light sweeping across the text while work is in flight */
+@keyframes shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+.shimmer {
+  background: linear-gradient(
+      90deg,
+      var(--muted) 0%,
+      var(--foreground) 20%,
+      var(--muted) 40%
+    )
+    0 0 / 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 2.2s linear infinite;
+}
+
+/* the aurora's slow wander */
+@keyframes drift {
+  from {
+    transform: translate3d(-2%, -1%, 0) scale(1);
+  }
+  to {
+    transform: translate3d(3%, 2%, 0) scale(1.12);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .pulse,
-  .rise {
-    animation: none;
+  *,
+  body::before {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+  }
+  .shimmer {
+    color: var(--muted);
+  }
+  /* the lift reads as a jump without its transition */
+  .btn:not(:disabled):hover,
+  button.chip:hover {
+    transform: none;
   }
 }
 
 /* ---------- print / save-as-PDF ---------- */
+
+/* margins only — the paper size stays the user's choice in the print dialog */
+@page {
+  margin: 14mm 12mm;
+}
+
+/* the report header exists only on paper; the screen has the topbar for this */
+.print-only {
+  display: none;
+}
 
 @media print {
   /* the light palette prints legibly; ExportPdf also flips the theme for canvas charts */
@@ -349,9 +653,42 @@ body {
     --border-strong: #aab1bd;
     --foreground: #0b0d12;
     --muted: #4b5563;
+    --glass: #fff;
+    --glass-2: #fff;
+    --sheen: transparent;
+    --shadow: none;
+    --shadow-lift: none;
+  }
+
+  /* paper has nothing to frost against: flatten the glass and drop the aurora */
+  body::before {
+    display: none;
+  }
+  * {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    box-shadow: none !important;
+    animation: none !important;
+  }
+  .shimmer {
+    color: var(--foreground);
+    -webkit-text-fill-color: var(--foreground);
   }
 
   .no-print {
+    display: none !important;
+  }
+  .print-only {
+    display: block !important;
+  }
+
+  /* screen-only chrome the `.no-print` class can't reach: vega injects its actions
+     menu itself, tabs navigate between previews that all print anyway, and a blob
+     PDF in an iframe prints as an empty box */
+  .vega-embed summary,
+  .vega-embed .vega-actions,
+  [role="tablist"],
+  iframe {
     display: none !important;
   }
 
@@ -362,11 +699,14 @@ body {
     display: none !important;
   }
 
-  /* panels are scroll boxes on screen; on paper they must print in full */
+  /* panels are scroll boxes on screen; on paper they must print in full. `break-inside`
+     stays `auto`: a section is usually taller than a page, and browsers drop an
+     unsatisfiable `avoid` anyway — the smaller blocks below carry the rule instead. */
   [data-print-section] {
-    break-inside: avoid;
+    break-inside: auto;
     min-height: 0 !important;
     max-height: none !important;
+    margin-bottom: 8mm;
   }
   [data-print-section] * {
     overflow: visible !important;
@@ -375,6 +715,46 @@ body {
   main,
   main > div {
     display: block !important;
+  }
+
+  /* flat, hairline sections read better on paper than the on-screen card look */
+  .panel,
+  .well {
+    border-radius: 4px;
+  }
+
+  /* keep an atom on one page: a chart with its caption, a metadata chip, a table row */
+  .well,
+  tr,
+  .chip {
+    break-inside: avoid;
+  }
+  .md h1,
+  .md h2,
+  .md h3,
+  .panel-head,
+  .eyebrow {
+    break-after: avoid;
+  }
+  .md p,
+  .md li {
+    orphans: 3;
+    widows: 3;
+  }
+
+  /* a chart is a canvas sized to the screen — hold it inside the page box */
+  canvas,
+  svg {
+    max-width: 100% !important;
+    height: auto !important;
+  }
+
+  /* a long table repeats its head on every page, and the sticky one must let go */
+  thead {
+    display: table-header-group;
+  }
+  .sticky-head {
+    position: static;
   }
 }
 

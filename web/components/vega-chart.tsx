@@ -28,7 +28,10 @@ function themeConfig() {
   ];
   return {
     background: "transparent",
-    autosize: { type: "fit", contains: "padding" } as const,
+    /* fit-x, not fit: `fit` squeezes the height too, and a step-sized discrete axis
+       (5 rows ≈ 100px) then has to fit its own axis labels inside that — which
+       collapses the marks to a sliver. Width still snaps to the panel; height grows. */
+    autosize: { type: "fit-x", contains: "padding" } as const,
     font: "inherit",
     title: { color: text, subtitleColor: muted },
     axis: {
@@ -75,7 +78,9 @@ function ChartView({ spec }: { spec: TopLevelSpec }) {
         mode: "vega-lite",
         actions: { export: true, source: false, compiled: false, editor: false },
         renderer: "canvas",
-        width: host.current.clientWidth - 24,
+        // vega-embed reserves 38px on the right for the actions menu; leave it that
+        // room or every chart overflows its container horizontally
+        width: Math.max(240, host.current.clientWidth - 44),
         config: themeConfig(),
       })
         .then((result) => {
@@ -107,7 +112,7 @@ function ChartFrame({
   const frame = useRef<HTMLDivElement>(null);
 
   return (
-    <div ref={frame} className="rounded-lg border border-border bg-background p-3">
+    <div ref={frame} className="well rise p-3">
       <div className="flex items-center gap-1.5">
         <span className="meta truncate text-muted">{chart.title}</span>
         <div className="no-print ml-auto flex gap-1">
@@ -176,7 +181,7 @@ export default function VegaChart({ sheets, hints, model, baseUrl, apiKey }: Pro
 
   if (!sheets.length) {
     return (
-      <div className="grid min-h-[200px] place-items-center rounded-lg border border-border bg-surface-2 text-center">
+      <div className="well pop grid min-h-[200px] place-items-center text-center">
         <div>
           <BarChart3 className="mx-auto size-6 text-muted" aria-hidden />
           <p className="display mt-2 text-[15px]">No spreadsheet data</p>
@@ -223,7 +228,7 @@ export default function VegaChart({ sheets, hints, model, baseUrl, apiKey }: Pro
       </form>
 
       {sheetHints.length > 0 && (
-        <div className="no-print mt-2 flex flex-wrap gap-1.5" aria-label="Chart ideas from uploaded columns">
+        <div className="stagger no-print mt-2 flex flex-wrap gap-1.5" aria-label="Chart ideas from uploaded columns">
           {sheetHints.map((hint) => (
             <button
               key={hint}
@@ -240,10 +245,10 @@ export default function VegaChart({ sheets, hints, model, baseUrl, apiKey }: Pro
         </div>
       )}
 
-      {error && <p className="mt-3 rounded-lg border border-border bg-surface px-3 py-2 text-[13px]">{error}</p>}
+      {error && <p className="well rise mt-3 px-3 py-2 text-[13px]">{error}</p>}
 
       {busy && !chart && (
-        <p className="meta pulse mt-4 py-10 text-center text-muted">designing the chart...</p>
+        <p className="meta shimmer mt-4 py-10 text-center">designing the chart...</p>
       )}
 
       {chart && (

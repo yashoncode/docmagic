@@ -15,7 +15,7 @@ type Props = {
 /** Post-upload analysis: the reviewed summary beside the promptable charts. */
 export default function AnalysisView({ ingest, model, baseUrl, apiKey }: Props) {
   return (
-    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+    <div className="stagger grid grid-cols-1 gap-4 lg:grid-cols-2">
       <section data-print-section="summary" className="panel flex min-h-[360px] flex-col">
         <div className="panel-head">
           <span className="eyebrow text-muted">Summary</span>
@@ -27,7 +27,7 @@ export default function AnalysisView({ ingest, model, baseUrl, apiKey }: Props) 
           )}
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
-          <div className="flex flex-wrap gap-1.5">
+          <div className="stagger flex flex-wrap gap-1.5">
             {ingest.metadata.map((metadata) => (
               <span key={metadata.source} className="chip normal-case">
                 <span className="font-medium text-foreground">{metadata.source}</span>

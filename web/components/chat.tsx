@@ -48,15 +48,15 @@ export default function Chat({
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6">
         <div className="mx-auto flex w-full max-w-2xl flex-col gap-5">
           {messages.length === 0 && (
-            <div className="py-6 text-center">
-              <div className="mx-auto grid size-11 place-items-center rounded-full bg-surface ring-1 ring-border">
+            <div className="rise py-6 text-center">
+              <div className="mx-auto grid size-11 place-items-center rounded-full bg-surface ring-1 ring-border backdrop-blur-md">
                 <MessagesSquare className="size-[18px] text-muted" aria-hidden />
               </div>
               <p className="display mt-3 text-[15px]">Ask anything</p>
               <p className="mt-1 text-xs text-muted">
                 Every answer cites the file, page or sheet it came from.
               </p>
-              <div className="mt-5 flex flex-wrap justify-center gap-2">
+              <div className="stagger mt-5 flex flex-wrap justify-center gap-2">
                 {suggestions.map((s) => (
                   <button
                     key={s}
@@ -73,13 +73,13 @@ export default function Chat({
 
           {messages.map((m, i) =>
             m.role === "user" ? (
-              <div key={i} className="flex justify-end">
-                <div className="max-w-[85%] rounded-2xl rounded-br-md bg-surface px-3.5 py-2 text-[13px] whitespace-pre-wrap">
+              <div key={i} className="rise flex justify-end">
+                <div className="well max-w-[85%] rounded-2xl rounded-br-md px-3.5 py-2 text-[13px] whitespace-pre-wrap">
                   {m.content}
                 </div>
               </div>
             ) : (
-              <div key={i}>
+              <div key={i} className="rise">
                 <div className="md text-[13.5px]">
                   <Markdown>{m.content}</Markdown>
                 </div>
@@ -94,8 +94,8 @@ export default function Chat({
                           onClick={() => rate(i, r)}
                           aria-label={r === "up" ? "Good answer" : "Bad answer"}
                           aria-pressed={rated[i] === r}
-                          className={`rounded-md p-1.5 hover:bg-surface ${
-                            rated[i] === r ? "text-accent" : "text-muted"
+                          className={`rounded-md p-1.5 transition-all duration-200 hover:-translate-y-0.5 hover:bg-surface ${
+                            rated[i] === r ? "scale-110 text-accent" : "text-muted"
                           }`}
                         >
                           <Icon className="size-3.5" aria-hidden />
@@ -109,9 +109,9 @@ export default function Chat({
           )}
 
           {status && (
-            <div className="flex items-center gap-2" aria-live="polite">
-              <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-accent" />
-              <span className="meta pulse text-muted">{status}</span>
+            <div className="rise flex items-center gap-2" aria-live="polite">
+              <span className="size-1.5 shrink-0 animate-ping rounded-full bg-accent" />
+              <span className="meta shimmer">{status}</span>
             </div>
           )}
           <div ref={bottom} />

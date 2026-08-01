@@ -36,7 +36,7 @@ type Props = {
 /** Brand row. Endpoint and key live in a settings popover; the model is the server's. */
 export default function TopBar({ config, apiKey, setApiKey, baseUrl, setBaseUrl }: Props) {
   return (
-    <header className="no-print flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5 sm:px-6">
+    <header className="glass-bar no-print flex flex-wrap items-center gap-2 px-4 py-2.5 sm:px-6">
       <span className="display text-[15px]">DocMagic</span>
       <span className="chip">XEON AI</span>
       {config.needsKey && !apiKey && <span className="chip chip-accent">key needed</span>}
@@ -56,7 +56,7 @@ export default function TopBar({ config, apiKey, setApiKey, baseUrl, setBaseUrl 
       <div
         id="settings"
         popover="auto"
-        className="panel fixed inset-auto top-14 right-4 m-0 w-[min(320px,calc(100vw-2rem))] space-y-3 p-4 shadow-lg"
+        className="panel fixed inset-auto top-14 right-4 m-0 w-[min(320px,calc(100vw-2rem))] space-y-3 p-4"
       >
         <p className="eyebrow text-muted">Settings</p>
         <div>

@@ -163,7 +163,7 @@ export default function Page() {
 
       {/* headline row — eyebrow + title left, live status + primary action right */}
       <div className="no-print shrink-0 px-4 pt-6 pb-4 sm:px-6">
-        <div className="flex flex-wrap items-end gap-x-6 gap-y-3">
+        <div className="rise flex flex-wrap items-end gap-x-6 gap-y-3">
           <div className="min-w-0">
             <p className="eyebrow text-accent">Document intelligence</p>
             <h1 className="display mt-1.5 text-[26px] sm:text-[30px]">
@@ -172,10 +172,14 @@ export default function Page() {
           </div>
 
           <div className="ml-auto flex flex-wrap items-center gap-2">
-            <span className="meta hidden items-center gap-1.5 text-muted md:inline-flex">
+            <span
+              className={`meta hidden items-center gap-1.5 md:inline-flex ${
+                uploading ? "shimmer" : "text-muted"
+              }`}
+            >
               <span
-                className={`size-1.5 rounded-full ${
-                  uploading ? "animate-pulse bg-accent" : hasDocs ? "bg-success" : "bg-border-strong"
+                className={`size-1.5 rounded-full transition-colors ${
+                  uploading ? "animate-ping bg-accent" : hasDocs ? "bg-success" : "bg-border-strong"
                 }`}
               />
               {ingestStatus ?? (hasDocs ? "documents indexed" : "no documents yet")}
@@ -203,7 +207,7 @@ export default function Page() {
       </div>
 
       {!config.dbReady && (
-        <div className="no-print mx-4 mb-3 shrink-0 rounded-lg border border-border bg-surface px-3 py-2.5 text-[13px] sm:mx-6">
+        <div className="well rise no-print mx-4 mb-3 shrink-0 px-3 py-2.5 text-[13px] sm:mx-6">
           <p className="flex items-center gap-2 font-medium">
             <AlertCircle className="size-4 shrink-0 text-accent" aria-hidden />
             Setup needed — <code className="meta">POSTGRES_URL</code> isn&apos;t set
@@ -235,7 +239,7 @@ export default function Page() {
       )}
 
       {error && (
-        <div className="rise no-print mx-4 mb-3 flex shrink-0 items-start gap-2 rounded-lg border border-border bg-surface px-3 py-2.5 text-[13px] sm:mx-6">
+        <div className="well rise no-print mx-4 mb-3 flex shrink-0 items-start gap-2 px-3 py-2.5 text-[13px] sm:mx-6">
           <AlertCircle className="mt-0.5 size-4 shrink-0 text-muted" aria-hidden />
           <p className="flex-1">{error}</p>
           <button
@@ -251,6 +255,22 @@ export default function Page() {
 
       {/* Workspace: upload and conversation stay together; analysis follows below. */}
       <main className="space-y-4 px-4 pb-4 sm:px-6 sm:pb-6">
+        {/* masthead for the exported PDF — on screen the topbar already says all this.
+            The date only ever renders on the client, so the prerendered build date it
+            replaces is a hydration mismatch by design. */}
+        {ingest && (
+          <header className="print-only mb-5 border-b border-border pb-3">
+            <p className="eyebrow text-accent">DocMagic · document intelligence</p>
+            <h2 className="display mt-1 text-lg">Document analysis</h2>
+            <p className="meta mt-1.5 text-muted">
+              {ingest.metadata.map((m) => m.source).join(" · ")}
+            </p>
+            <p className="meta mt-0.5 text-muted" suppressHydrationWarning>
+              Generated {new Date().toLocaleString()}
+            </p>
+          </header>
+        )}
+
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
           <DocPanel
             files={files}

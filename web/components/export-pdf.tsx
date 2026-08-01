@@ -54,7 +54,7 @@ export default function ExportPdf() {
       <div
         id="export"
         popover="auto"
-        className="panel fixed inset-auto top-32 right-4 m-0 w-[min(320px,calc(100vw-2rem))] space-y-3 p-4 shadow-lg"
+        className="panel fixed inset-auto top-32 right-4 m-0 w-[min(320px,calc(100vw-2rem))] space-y-3 p-4"
       >
         <p className="eyebrow text-muted">Include in the PDF</p>
         {SECTIONS.map((s) => (

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { FileText, Sheet, Upload, X } from "lucide-react";
+import { FileText, Maximize2, Sheet, Upload, X } from "lucide-react";
 import { getSheet, type SheetPreview } from "@/lib/api";
 
 type Props = {
@@ -18,6 +18,7 @@ type Tab = { kind: "pdf"; label: string; file: File } | { kind: "sheet"; label: 
 
 export default function DocPanel({ files, setFiles, maxFiles, analysed, busy, sheets }: Props) {
   const picker = useRef<HTMLInputElement>(null);
+  const panel = useRef<HTMLElement>(null);
   const [over, setOver] = useState(false);
   const [active, setActive] = useState(0);
 
@@ -39,7 +40,7 @@ export default function DocPanel({ files, setFiles, maxFiles, analysed, busy, sh
   }
 
   return (
-    <section data-print-section="data" className="panel flex min-h-0 flex-col">
+    <section ref={panel} data-print-section="data" className="panel flex min-h-0 flex-col">
       <div className="panel-head">
         <span className="eyebrow text-muted">Source</span>
         {files.length > 0 && (
@@ -54,6 +55,21 @@ export default function DocPanel({ files, setFiles, maxFiles, analysed, busy, sh
             >
               <Upload className="size-3.5" aria-hidden />
               Replace
+            </button>
+            {/* the whole panel goes fullscreen, not just the preview, so this button
+                stays on screen to toggle back out — same pattern as ChartFrame */}
+            <button
+              type="button"
+              onClick={() =>
+                document.fullscreenElement
+                  ? document.exitFullscreen()
+                  : panel.current?.requestFullscreen()
+              }
+              aria-label="Toggle fullscreen preview"
+              title="Fullscreen (Esc to exit)"
+              className="btn btn-ghost no-print size-7 p-0"
+            >
+              <Maximize2 className="size-3.5" aria-hidden />
             </button>
           </>
         )}
@@ -80,11 +96,11 @@ export default function DocPanel({ files, setFiles, maxFiles, analysed, busy, sh
             setOver(false);
             accept(e.dataTransfer.files);
           }}
-          className={`m-3 flex flex-1 flex-col items-center justify-center rounded-lg border border-dashed p-8 text-center transition-colors ${
-            over ? "border-accent bg-accent-soft" : "border-border bg-surface-2"
+          className={`well m-3 flex flex-1 flex-col items-center justify-center border-dashed p-8 text-center transition-all duration-300 ${
+            over ? "scale-[1.01] border-accent bg-accent-soft" : "border-border"
           }`}
         >
-          <div className="grid size-11 place-items-center rounded-full bg-background ring-1 ring-border">
+          <div className="grid size-11 place-items-center rounded-full bg-surface ring-1 ring-border">
             <Upload className="size-[18px] text-muted" aria-hidden />
           </div>
           <p className="display mt-3 text-[15px]">Drop a document</p>
@@ -102,11 +118,11 @@ export default function DocPanel({ files, setFiles, maxFiles, analysed, busy, sh
         </div>
       ) : (
         <div className="flex min-h-0 flex-1 flex-col">
-          <ul className="shrink-0 space-y-1 p-3">
+          <ul className="stagger shrink-0 space-y-1 p-3">
             {files.map((f) => (
               <li
                 key={f.name}
-                className="flex items-center gap-2 rounded-lg bg-surface px-2.5 py-2 text-[13px]"
+                className="well flex items-center gap-2 px-2.5 py-2 text-[13px] transition-colors hover:border-border-strong"
               >
                 {f.name.toLowerCase().endsWith(".pdf") ? (
                   <FileText className="size-4 shrink-0 text-muted" aria-hidden />
@@ -151,7 +167,7 @@ export default function DocPanel({ files, setFiles, maxFiles, analysed, busy, sh
             </div>
           )}
 
-          <div className="min-h-0 flex-1 border-t border-border bg-surface-2 p-3">
+          <div className="min-h-0 flex-1 border-t border-border bg-surface-2 p-3 transition-opacity">
             {!tab ? (
               <Placeholder
                 title="Spreadsheet ready"
@@ -172,7 +188,7 @@ export default function DocPanel({ files, setFiles, maxFiles, analysed, busy, sh
 
 function Placeholder({ title, note }: { title: string; note: string }) {
   return (
-    <div className="grid h-full min-h-[220px] place-items-center rounded-lg border border-border bg-background text-center">
+    <div className="well pop grid h-full min-h-[220px] place-items-center text-center">
       <div>
         <Sheet className="mx-auto size-6 text-muted" aria-hidden />
         <p className="display mt-2 text-[15px]">{title}</p>
@@ -190,7 +206,7 @@ function PdfPreview({ file }: { file: File }) {
     <iframe
       src={url}
       title={`Preview of ${file.name}`}
-      className="h-full min-h-[220px] w-full rounded-lg border border-border bg-background"
+      className="well pop h-full min-h-[220px] w-full"
     />
   );
 }
@@ -212,17 +228,17 @@ function SheetPreviewTable({ name }: { name: string }) {
   if (error) return <Placeholder title="Preview unavailable" note={error} />;
   if (!data) {
     return (
-      <div className="grid h-full min-h-[220px] place-items-center rounded-lg border border-border bg-background">
-        <span className="meta pulse text-muted">loading {name}…</span>
+      <div className="well grid h-full min-h-[220px] place-items-center">
+        <span className="meta shimmer">loading {name}…</span>
       </div>
     );
   }
 
   return (
-    <div className="flex h-full min-h-[220px] flex-col rounded-lg border border-border bg-background">
+    <div className="well pop flex h-full min-h-[220px] flex-col overflow-hidden">
       <div className="min-h-0 flex-1 overflow-auto">
         <table className="w-full border-collapse text-[12px]">
-          <thead className="sticky top-0 bg-surface">
+          <thead className="sticky-head sticky top-0">
             <tr>
               {data.columns.map((c) => (
                 <th
@@ -237,7 +253,7 @@ function SheetPreviewTable({ name }: { name: string }) {
           </thead>
           <tbody>
             {data.rows.map((row, i) => (
-              <tr key={i} className="odd:bg-surface-2">
+              <tr key={i} className="transition-colors odd:bg-surface-2 hover:bg-accent-soft">
                 {data.columns.map((c) => (
                   <td key={c} className="border-b border-border px-2.5 py-1.5 whitespace-nowrap">
                     {row[c] === null || row[c] === undefined ? "" : String(row[c])}
