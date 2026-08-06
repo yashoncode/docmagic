@@ -30,7 +30,7 @@ from starlette.concurrency import run_in_threadpool
 
 from charts import build_chart, suggest_chart_hints
 from chat_graph import chat_stream
-from ingest_graph import build_ingest_graph
+from ingest_graph import build_ingest_graph, suggest_questions
 from rag import (
     EMBED_API_KEY,
     LLM_API_KEY,
@@ -187,6 +187,13 @@ async def upload(
                     sheet: await run_in_threadpool(suggest_chart_hints, sid, sheet, llm)
                     for sheet in sheets
                 }
+                yield sse("node", {"name": "questions"})
+                questions = await run_in_threadpool(
+                    suggest_questions,
+                    final.get("analysis", ""),
+                    final.get("metadata", []),
+                    llm,
+                )
                 yield sse(
                     "result",
                     {
@@ -195,6 +202,7 @@ async def upload(
                         "review": final.get("review", {}),
                         "sheets": sheets,
                         "chartHints": chart_hints,
+                        "suggestions": questions,
                     },
                 )
         except AuthenticationError:
@@ -285,6 +293,30 @@ async def sheet(request: Request, name: str, limit: int = 50):
         "rows": json.loads(head.to_json(orient="records", date_format="iso")),
         "total": len(df),
     }
+
+
+class ModelBody(BaseModel):
+    model: str = LLM_MODEL
+    baseUrl: str = LLM_BASE_URL
+    key: str = ""
+
+
+@app.post("/api/model")
+async def model_status(body: ModelBody):
+    """Is the chat model itself reachable? A one-token probe — embeddings and the
+    reranker are deliberately not consulted, so the indicator means what it says."""
+    chat_key, embed_key = _keys(body.key)
+    if not chat_key:
+        return {"online": False, "reason": "No API key — add one in settings."}
+    llm, _ = resources(chat_key, body.baseUrl, body.model, embed_key)
+    try:
+        await llm.ainvoke("ping", max_tokens=1)
+        return {"online": True, "reason": ""}
+    except AuthenticationError:
+        return {"online": False, "reason": "The API key was rejected."}
+    except Exception as e:
+        log.warning("model probe failed | model=%s | %s", body.model, e)
+        return {"online": False, "reason": "The model didn't respond."}
 
 
 class ChartBody(BaseModel):

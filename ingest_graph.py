@@ -78,6 +78,35 @@ REVIEWER_PROMPT = ChatPromptTemplate.from_messages(
     ]
 )
 
+QUESTION_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "Suggest 3 questions the user could ask about THESE documents. Reply with ONLY a "
+            "JSON array of short questions. Base every question on the actual content — name "
+            "the real parties, sheets, routes, rates or dates that appear. No generic "
+            "definition questions, no questions the documents can't answer.",
+        ),
+        ("human", "Metadata (JSON): {metadata}\n\nSummary of the documents:\n{analysis}"),
+    ]
+)
+
+
+def suggest_questions(analysis: str, metadata: list[dict], llm) -> list[str]:
+    """Document-aware chat starters. Best-effort — [] falls back to the generic ones."""
+    try:
+        questions = (QUESTION_PROMPT | llm | JsonOutputParser()).invoke(
+            {"analysis": analysis, "metadata": json.dumps(metadata, default=str)},
+            config=trace_config(),
+        )
+        if not isinstance(questions, list):
+            return []
+        return [q.strip() for q in questions if isinstance(q, str) and q.strip()][:3]
+    except Exception:
+        log.exception("question suggestion failed")
+        return []
+
+
 def _excerpt(path: str) -> str:
     """First EXCERPT_WORDS words of a file, as a labelled block for the prompts."""
     words = []

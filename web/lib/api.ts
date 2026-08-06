@@ -30,6 +30,8 @@ export type IngestResult = {
   review: { approved?: boolean; notes?: string };
   sheets: string[];
   chartHints: Record<string, string[]>;
+  /** Document-aware chat starters; empty when the model couldn't produce any. */
+  suggestions: string[];
 };
 
 export type Msg = { role: "user" | "assistant"; content: string };
@@ -127,6 +129,24 @@ export async function askChat(body: {
   return res;
 }
 
+export type ModelStatus = { online: boolean; reason: string };
+
+/** Probes the chat model itself (not embeddings or the reranker). */
+export async function checkModel(
+  body: { model: string; baseUrl: string; key: string },
+  signal?: AbortSignal,
+): Promise<ModelStatus> {
+  const res = await fetch(`${API}/api/model`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) return { online: false, reason: "Couldn't reach the API." };
+  return res.json();
+}
+
 export type SheetPreview = {
   columns: string[];
   rows: Record<string, unknown>[];
@@ -189,4 +209,5 @@ export const INGEST_STEPS: Record<string, string> = {
   analyst: "Analysing…",
   reviewer: "Reviewing for accuracy…",
   chart_hints: "Suggesting charts for your sheets…",
+  questions: "Suggesting questions to ask…",
 };

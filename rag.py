@@ -39,6 +39,8 @@ EMBED_BASE_URL = os.getenv("EMBED_BASE_URL", "https://integrate.api.nvidia.com/v
 EMBED_MODEL = os.getenv("EMBED_MODEL", "nvidia/nemotron-3-embed-1b")
 RERANK_MODEL = os.getenv("RERANK_MODEL", "nvidia/llama-nemotron-rerank-vl-1b-v2")  # reranks hybrid hits
 RERANK_API_KEY = os.getenv("RERANK_API_KEY", "")  # own key; falls back to the embed key
+# vision model used to read scanned/image-only PDFs; must accept image_url content
+OCR_MODEL = os.getenv("OCR_MODEL", "meta/llama-4-scout-17b-16e-instruct")
 POSTGRES_URL = os.getenv("POSTGRES_URL", "")  # required: pgvector chunks + extracted sheets
 
 CHUNK_CHARS = 1500  # splitter counts characters; ~250 words
@@ -47,6 +49,9 @@ TOP_K = 5
 FETCH_K = 20  # hybrid candidates pulled per retriever before reranking down to TOP_K
 CORPUS_K = 500  # ceiling for the per-query BM25 corpus pull (a session holds far fewer chunks)
 WEB_RESULTS = 4  # web results pulled per question when web search is on
+# scanned PDFs: pages with fewer than this many characters each are treated as image-only
+OCR_MIN_CHARS = 60
+OCR_MAX_PAGES = 15  # ceiling on vision calls per scanned file
 
 SYSTEM_PROMPT = (
     "You are XEON AI, a friendly expert on logistics, warehousing, ERP and CRM "
@@ -233,6 +238,68 @@ def load_frame(sid: str, sheet: str) -> pd.DataFrame | None:
     return None if table is None else pd.read_sql_table(table, engine(), schema="analytics")
 
 
+OCR_INSTRUCTION = (
+    "Transcribe every word, number and table in this scanned document page as plain text. "
+    "Keep the reading order and keep table rows on one line, cells separated by ' | '. "
+    "Output only the transcription — no commentary, no markdown fences."
+)
+
+
+def _thin(docs: list[Document]) -> bool:
+    """True when a PDF's text layer is too sparse to answer from — i.e. it's a scan."""
+    return bool(docs) and sum(len(d.page_content.strip()) for d in docs) < OCR_MIN_CHARS * len(docs)
+
+
+def _ocr(path: str, name: str) -> list[Document]:
+    """Read a scanned PDF by sending each page's image to a vision model.
+
+    pypdf is already a dependency and a scanned page is one full-page image, so this
+    needs no OCR binary and no rasterizer. Runs on the server's own key/endpoint,
+    like embeddings and reranking do.
+    """
+    if not (OCR_MODEL and LLM_API_KEY):
+        log.warning("scanned PDF but OCR is not configured (OCR_MODEL / LLM_API_KEY)")
+        return []
+    import base64
+    import mimetypes
+
+    from pypdf import PdfReader
+
+    vlm = ChatOpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY, model=OCR_MODEL, temperature=0)
+    docs = []
+    # ponytail: first OCR_MAX_PAGES only, one page per call — batch or queue it if long scans matter
+    for i, page in enumerate(PdfReader(path).pages[:OCR_MAX_PAGES]):
+        images = list(page.images)
+        if not images:
+            continue
+        image = max(images, key=lambda im: len(im.data))  # the page scan, not a logo
+        mime = mimetypes.guess_type(image.name or "page.png")[0] or "image/png"
+        url = f"data:{mime};base64,{base64.b64encode(image.data).decode()}"
+        try:
+            reply = vlm.invoke(
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": OCR_INSTRUCTION},
+                            {"type": "image_url", "image_url": {"url": url}},
+                        ],
+                    }
+                ],
+                config=trace_config(),
+            )
+        except Exception:  # a rejected key or non-vision model fails every page — stop at the first
+            log.exception("OCR failed on %s p.%d — giving up", name, i + 1)
+            break
+        text_out = str(reply.content).strip()
+        if text_out:
+            docs.append(
+                Document(page_content=text_out, metadata={"source": name, "loc": f"p.{i + 1}"})
+            )
+    log.info("OCR | %s -> %d page(s) transcribed", name, len(docs))
+    return docs
+
+
 def load_units(path: str) -> list[Document]:
     """One Document per PDF page or Excel sheet, labeled for citations."""
     from openpyxl import load_workbook
@@ -250,13 +317,15 @@ def load_units(path: str) -> list[Document]:
             docs.append(Document(page_content=text, metadata={"source": name, "loc": ws.title}))
         wb.close()
         return docs
-    return [
+    pages = [
         Document(
             page_content=p.page_content,
             metadata={"source": name, "loc": f"p.{p.metadata.get('page', 0) + 1}"},
         )
         for p in PyPDFLoader(path).load()
     ]
+    # scanned/image-only PDFs have no text layer — transcribe the page images instead
+    return _ocr(path, name) or pages if _thin(pages) else pages
 
 
 def ingest(paths: list[str], vectorstore) -> int:

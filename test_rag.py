@@ -165,6 +165,30 @@ def test_ingest_review_loop_bounded():
     assert state["revisions"] == MAX_REVISIONS + 1  # bounced once, then forced through
 
 
+def test_thin_text_layer():
+    # the OCR fallback must fire for a scan and never for a real text layer
+    from langchain_core.documents import Document
+
+    from rag import _thin
+
+    assert _thin([Document(page_content=" \n")])  # image-only page
+    assert _thin([Document(page_content="Page 3"), Document(page_content="")])  # near-empty scan
+    assert not _thin([Document(page_content="x" * 400)])
+    assert not _thin([])  # no pages is not a scan — nothing to transcribe
+
+
+def test_suggest_questions():
+    # good JSON is trimmed to 3; anything unparseable falls back to [] so the UI
+    # can show its generic starters instead of crashing the upload
+    from langchain_core.runnables import RunnableLambda
+
+    from ingest_graph import suggest_questions
+
+    llm = RunnableLambda(lambda pv: '["A?", " B? ", "C?", "D?"]')
+    assert suggest_questions("summary", [], llm) == ["A?", "B?", "C?"]
+    assert suggest_questions("summary", [], RunnableLambda(lambda pv: "not json")) == []
+
+
 def test_router():
     from langchain_core.messages import AIMessage
     from langchain_core.runnables import RunnableLambda

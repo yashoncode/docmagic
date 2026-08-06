@@ -9,6 +9,7 @@ import AnalysisView from "@/components/analysis-view";
 import ExportPdf from "@/components/export-pdf";
 import {
   askChat,
+  checkModel,
   getConfig,
   sse,
   uploadFiles,
@@ -16,8 +17,18 @@ import {
   STATUS,
   type Config,
   type IngestResult,
+  type ModelStatus,
   type Msg,
 } from "@/lib/api";
+
+/** Endpoint + key survive a refresh but not the tab — sessionStorage, never localStorage:
+ *  a pasted key must not outlive the session on a shared machine. */
+function remember(key: string, set: (v: string) => void) {
+  return (v: string) => {
+    sessionStorage.setItem(key, v);
+    set(v);
+  };
+}
 
 export default function Page() {
   const [config, setConfig] = useState<Config | null>(null);
@@ -26,6 +37,7 @@ export default function Page() {
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState(""); // server-configured; no picker
   const [baseUrl, setBaseUrl] = useState("");
+  const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null); // null = checking
 
   const [files, setFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -43,10 +55,27 @@ export default function Page() {
       .then((c) => {
         setConfig(c);
         setModel(c.defaultModel);
-        setBaseUrl(c.baseUrl);
+        setBaseUrl(sessionStorage.getItem("baseUrl") || c.baseUrl);
+        setApiKey(sessionStorage.getItem("apiKey") ?? "");
       })
       .catch((e) => setFatal(e.message));
   }, []);
+
+  // probe the chat model itself; debounced so typing a key doesn't fire a call per keystroke
+  useEffect(() => {
+    if (!model) return;
+    const ctl = new AbortController();
+    const t = setTimeout(() => {
+      setModelStatus(null); // back to "checking…" only once the debounce settles
+      checkModel({ model, baseUrl, key: apiKey }, ctl.signal)
+        .then(setModelStatus)
+        .catch(() => {});
+    }, 500);
+    return () => {
+      clearTimeout(t);
+      ctl.abort();
+    };
+  }, [model, baseUrl, apiKey]);
 
   async function analyse() {
     if (!config || files.length === 0) return;
@@ -65,7 +94,7 @@ export default function Page() {
         } else if (event === "result") {
           if (data.reason === "no_text") {
             setError(
-              "I couldn't find readable text in those files — a scanned or image-only PDF has no text layer to read.",
+              "I couldn't read any text from those files — I also tried transcribing them as scans and got nothing usable.",
             );
           } else if (data.reason === "no_key") {
             setError("Documents indexed. Add your API key to chat and get an analysis.");
@@ -156,9 +185,10 @@ export default function Page() {
       <TopBar
         config={config}
         apiKey={apiKey}
-        setApiKey={setApiKey}
+        setApiKey={remember("apiKey", setApiKey)}
         baseUrl={baseUrl}
-        setBaseUrl={setBaseUrl}
+        setBaseUrl={remember("baseUrl", setBaseUrl)}
+        modelStatus={modelStatus}
       />
 
       {/* headline row — eyebrow + title left, live status + primary action right */}
@@ -182,7 +212,7 @@ export default function Page() {
                   uploading ? "animate-ping bg-accent" : hasDocs ? "bg-success" : "bg-border-strong"
                 }`}
               />
-              {ingestStatus ?? (hasDocs ? "documents indexed" : "no documents yet")}
+              {ingestStatus ?? (hasDocs ? "documents indexed" : "not indexed yet")}
             </span>
             <span className="meta hidden text-muted lg:inline">·</span>
             <span className="meta hidden text-muted lg:inline">
@@ -289,7 +319,9 @@ export default function Page() {
               messages={messages}
               status={status}
               busy={busy}
-              suggestions={config.suggestions}
+              suggestions={
+                ingest?.suggestions?.length ? ingest.suggestions : config.suggestions
+              }
               model={model}
               onSend={send}
             />

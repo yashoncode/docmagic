@@ -1,7 +1,7 @@
 "use client";
 
 import { Moon, Settings, Sun } from "lucide-react";
-import type { Config } from "@/lib/api";
+import type { Config, ModelStatus } from "@/lib/api";
 
 /** Flips `data-theme` on <html>; the palette and which icon shows are CSS's job, so
  *  there's no React state to keep in sync with the DOM (and nothing to mis-hydrate). */
@@ -31,10 +31,16 @@ type Props = {
   setApiKey: (v: string) => void;
   baseUrl: string;
   setBaseUrl: (v: string) => void;
+  modelStatus: ModelStatus | null; // null while the probe is in flight
 };
 
 /** Brand row. Endpoint and key live in a settings popover; the model is the server's. */
-export default function TopBar({ config, apiKey, setApiKey, baseUrl, setBaseUrl }: Props) {
+export default function TopBar({
+  config, apiKey, setApiKey, baseUrl, setBaseUrl, modelStatus,
+}: Props) {
+  const online = modelStatus?.online ?? false;
+  const label = modelStatus ? (online ? "on" : "off") : "checking…";
+
   return (
     <header className="glass-bar no-print flex flex-wrap items-center gap-2 px-4 py-2.5 sm:px-6">
       <span className="display text-[15px]">DocMagic</span>
@@ -42,6 +48,30 @@ export default function TopBar({ config, apiKey, setApiKey, baseUrl, setBaseUrl 
       {config.needsKey && !apiKey && <span className="chip chip-accent">key needed</span>}
 
       <span className="ml-auto" />
+
+      {/* model status: a live one-token probe of the chat model — not the key's presence,
+          and not the embedding or reranker models */}
+      <button type="button" popoverTarget="model-info" className="chip gap-1.5">
+        <span
+          aria-hidden
+          className={`size-2 rounded-full ${
+            !modelStatus ? "animate-pulse bg-border-strong" : online ? "bg-success" : "bg-muted"
+          }`}
+        />
+        AI model {label}
+      </button>
+      <div
+        id="model-info"
+        popover="auto"
+        className="panel fixed inset-auto top-14 right-4 m-0 max-w-[min(320px,calc(100vw-2rem))] p-3"
+      >
+        <p className="eyebrow text-muted">Model</p>
+        <p className="meta mt-1 break-all">{config.defaultModel}</p>
+        {modelStatus?.reason && (
+          <p className="mt-1.5 text-xs text-muted">{modelStatus.reason}</p>
+        )}
+      </div>
+
       <ThemeToggle />
 
       {/* native popover: light-dismiss and Escape come for free */}
@@ -85,7 +115,7 @@ export default function TopBar({ config, apiKey, setApiKey, baseUrl, setBaseUrl 
             className="field meta mt-1"
           />
           <p className="mt-1.5 text-xs leading-relaxed text-muted">
-            Kept in this tab only — never stored.
+            Kept in this browser tab — survives a refresh, gone when you close it.
           </p>
         </div>
       </div>
