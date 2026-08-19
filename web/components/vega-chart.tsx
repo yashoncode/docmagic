@@ -11,6 +11,8 @@ type Props = {
   model: string;
   baseUrl: string;
   apiKey: string;
+  /** The model probe came back off — charting would only fail at the server. */
+  offline: boolean;
 };
 
 type Chart = { id: number; spec: TopLevelSpec; note: string | null; title: string };
@@ -138,7 +140,7 @@ function ChartFrame({
   );
 }
 
-export default function VegaChart({ sheets, hints, model, baseUrl, apiKey }: Props) {
+export default function VegaChart({ sheets, hints, model, baseUrl, apiKey, offline }: Props) {
   const [picked, setPicked] = useState<string | null>(null);
   const sheet = picked && sheets.includes(picked) ? picked : (sheets[0] ?? "");
   const sheetHints = hints[sheet] ?? [];
@@ -151,6 +153,10 @@ export default function VegaChart({ sheets, hints, model, baseUrl, apiKey }: Pro
   async function ask(candidate: string) {
     const text = candidate.trim();
     if (!text || busy || !sheet) return;
+    if (offline) {
+      setError("The AI model is off — charts need it. Check the base URL and API key in Settings.");
+      return;
+    }
     setBusy(true);
     setError(null);
     setChart(null);
@@ -221,7 +227,11 @@ export default function VegaChart({ sheets, hints, model, baseUrl, apiKey }: Pro
           aria-label="Describe a chart"
           className="field min-w-[200px] flex-1"
         />
-        <button type="submit" disabled={busy || !question.trim()} className="btn btn-primary">
+        <button
+          type="submit"
+          disabled={busy || offline || !question.trim()}
+          className="btn btn-primary"
+        >
           {busy ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Sparkles className="size-4" aria-hidden />}
           Chart it
         </button>

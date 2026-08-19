@@ -10,10 +10,11 @@ type Props = {
   model: string;
   baseUrl: string;
   apiKey: string;
+  offline: boolean;
 };
 
 /** Post-upload analysis: the reviewed summary beside the promptable charts. */
-export default function AnalysisView({ ingest, model, baseUrl, apiKey }: Props) {
+export default function AnalysisView({ ingest, model, baseUrl, apiKey, offline }: Props) {
   return (
     <div className="stagger grid grid-cols-1 gap-4 lg:grid-cols-2">
       <section data-print-section="summary" className="panel flex min-h-[360px] flex-col">
@@ -60,6 +61,7 @@ export default function AnalysisView({ ingest, model, baseUrl, apiKey }: Props) 
             model={model}
             baseUrl={baseUrl}
             apiKey={apiKey}
+            offline={offline}
           />
         </div>
       </section>

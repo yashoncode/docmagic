@@ -26,6 +26,10 @@ import {
 
 /** Endpoint + key survive a refresh but not the tab — sessionStorage, never localStorage:
  *  a pasted key must not outlive the session on a shared machine. */
+/** Shown wherever a model call is refused because the probe says the model is off. */
+const OFFLINE_MSG =
+  "The AI model is off — nothing can run until it answers. Check the base URL and API key in Settings.";
+
 function remember(key: string, set: (v: string) => void) {
   return (v: string) => {
     sessionStorage.setItem(key, v);
@@ -82,8 +86,12 @@ export default function Page() {
     };
   }, [model, baseUrl, apiKey, user]);
 
+  // false only once the probe has actually answered — never while it's still checking
+  const offline = modelStatus?.online === false;
+
   async function analyse() {
     if (!config || files.length === 0) return;
+    if (offline) return setError(OFFLINE_MSG);
     setUploading(true);
     setError(null);
     setIngest(null);
@@ -121,6 +129,7 @@ export default function Page() {
 
   async function send(question: string) {
     if (busy) return;
+    if (offline) return setError(OFFLINE_MSG); // covers the composer and the suggestion chips
     setBusy(true);
     setError(null);
     setStatus("Thinking…");
@@ -240,7 +249,8 @@ export default function Page() {
             <button
               type="button"
               onClick={analyse}
-              disabled={uploading || files.length === 0}
+              disabled={uploading || files.length === 0 || offline}
+              title={offline ? OFFLINE_MSG : undefined}
               className="btn btn-primary ml-1"
             >
               {uploading ? (
@@ -282,6 +292,19 @@ export default function Page() {
             </a>
             , add it to <code className="meta">.env</code>, and restart the API. Your API
             keys are already configured.
+          </p>
+        </div>
+      )}
+
+      {offline && (
+        <div className="well rise no-print mx-4 mb-3 shrink-0 px-3 py-2.5 text-[13px] sm:mx-6">
+          <p className="flex items-center gap-2 font-medium">
+            <AlertCircle className="size-4 shrink-0 text-accent" aria-hidden />
+            AI model is off — analysis, chat and charts are paused
+          </p>
+          <p className="mt-1 pl-6 text-xs leading-relaxed text-muted">
+            {modelStatus?.reason || "The chat model didn't answer a test call."} Fix the
+            base URL or API key in Settings; the check reruns as soon as you edit either.
           </p>
         </div>
       )}
@@ -347,7 +370,13 @@ export default function Page() {
         </div>
 
         {ingest && (
-          <AnalysisView ingest={ingest} model={model} baseUrl={baseUrl} apiKey={apiKey} />
+          <AnalysisView
+            ingest={ingest}
+            model={model}
+            baseUrl={baseUrl}
+            apiKey={apiKey}
+            offline={offline}
+          />
         )}
       </main>
     </div>
