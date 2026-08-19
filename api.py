@@ -7,7 +7,11 @@ Two endpoints stream Server-Sent Events:
   POST /api/upload   ingested → node* → result
   POST /api/chat     status* / token* → done | error
 
+Signed in with Google (see auth.py); every model call is billed against the
+user's token credits, so all four model endpoints require a session.
+
 Env: POSTGRES_URL (required), EMBED_API_KEY, LLM_API_KEY, TAVILY_API_KEY,
+     GOOGLE_CLIENT_ID, SESSION_SECRET, FREE_TOKENS, ADMIN_EMAILS,
      WEB_ORIGIN (frontend origin for CORS), COOKIE_CROSS_SITE=1 when the frontend
      is on a different site than this API.
 
@@ -20,14 +24,16 @@ import tempfile
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from langchain_core.callbacks import UsageMetadataCallbackHandler
 from openai import AuthenticationError
 from pydantic import BaseModel
 from sqlalchemy import text
 from sse_starlette.sse import EventSourceResponse
 from starlette.concurrency import run_in_threadpool
 
+import auth
 from charts import build_chart, suggest_chart_hints
 from chat_graph import chat_stream
 from ingest_graph import build_ingest_graph, suggest_questions
@@ -42,6 +48,7 @@ from rag import (
     ingest,
     load_frame,
     log,
+    purge,
     reset_store,
     reset_uploads,
     resources,
@@ -78,21 +85,72 @@ app.add_middleware(
 )
 
 
-@app.middleware("http")
-async def session_cookie(request: Request, call_next):
-    """Mint/carry the session id. Middleware, not a dependency, so SSE responses get it too."""
-    sid = request.cookies.get("sid") or uuid4().hex[:12]
-    request.state.sid = sid
-    response = await call_next(request)
+def _cookie(response, name: str, value: str, days: int = SESSION_DAYS) -> None:
+    """Our cookies, one set of flags. Cross-site needs SameSite=None + Secure."""
     response.set_cookie(
-        "sid",
-        sid,
+        name,
+        value,
         httponly=True,
         samesite="none" if CROSS_SITE else "lax",
         secure=CROSS_SITE,
-        max_age=SESSION_DAYS * 24 * 3600,
+        max_age=days * 24 * 3600,
     )
+
+
+@app.middleware("http")
+async def session_cookie(request: Request, call_next):
+    """Mint/carry the session id. Middleware, not a dependency, so SSE responses get it too.
+
+    Documents stay keyed to the browser session, never to the account: the user row
+    holds the token ledger and nothing else, and signing out erases the uploads.
+    Cookie parsing only — the user row is looked up per route, where a database
+    outage can still be reported properly.
+    """
+    sid = request.cookies.get("sid") or uuid4().hex[:12]
+    request.state.sid = sid
+    request.state.uid = auth.parse(request.cookies.get(auth.COOKIE, ""))
+    response = await call_next(request)
+    _cookie(response, "sid", sid)
     return response
+
+
+async def signed_in(request: Request) -> dict:
+    """The current user, or 401. Every model call goes through here."""
+    if not request.state.uid:
+        raise HTTPException(401, "Please sign in to continue.")
+    try:
+        user = await run_in_threadpool(auth.user, request.state.uid)
+    except RuntimeError as e:  # database missing/unreachable
+        raise HTTPException(503, str(e)) from e
+    if not user:
+        raise HTTPException(401, "Please sign in to continue.")
+    return user
+
+
+async def with_credits(request: Request) -> dict:
+    user = await signed_in(request)
+    if user["tokens_left"] <= 0:
+        raise HTTPException(
+            402, "You're out of token credits. Ask an admin to top up your account."
+        )
+    return user
+
+
+def metered(llm):
+    """(llm that reports its token usage, the handler holding the totals).
+
+    `resources()` is cached across requests, so the callback goes on a copy —
+    never on the shared model.
+    """
+    handler = UsageMetadataCallbackHandler()
+    return llm.model_copy(update={"callbacks": [handler]}), handler
+
+
+async def bill(user: dict, handler, chars: int = 0) -> None:
+    try:
+        await run_in_threadpool(auth.spend, user["id"], auth.charged(handler, chars))
+    except Exception:
+        log.exception("could not bill tokens for %s", user["email"])  # never fail the answer
 
 
 def sse(event: str, data: dict) -> dict:
@@ -120,7 +178,106 @@ async def config():
         "dbReady": bool(os.getenv("POSTGRES_URL")),
         "maxFiles": MAX_FILES,
         "suggestions": SUGGESTIONS,
+        "googleClientId": auth.GOOGLE_CLIENT_ID,
+        "freeTokens": auth.FREE_TOKENS,
+        "minPassword": auth.MIN_PASSWORD,
     }
+
+
+class GoogleBody(BaseModel):
+    credential: str  # the ID token from Google Identity Services
+
+
+@app.post("/api/auth/google")
+async def auth_google(request: Request, body: GoogleBody, response: Response):
+    """Verify Google's ID token, create the account on first sign-in, start a session."""
+    try:
+        claims = await run_in_threadpool(auth.verify_google, body.credential)
+        user = await run_in_threadpool(auth.login, claims)
+    except ValueError as e:
+        raise HTTPException(401, str(e)) from e
+    except RuntimeError as e:  # sign-in or database not configured
+        raise HTTPException(503, str(e)) from e
+    _cookie(response, auth.COOKIE, auth.sign(user["id"]), auth.SESSION_DAYS)
+    return user
+
+
+class EmailBody(BaseModel):
+    email: str
+    password: str
+    name: str = ""  # sign-up only
+
+
+@app.post("/api/auth/signup")
+async def auth_signup(body: EmailBody, response: Response):
+    """Create an email account and start a session. No verification mail — the address
+    is only an identifier here, so an unverified one costs nothing but its own credits."""
+    return await _email_session(auth.signup, body, response)
+
+
+@app.post("/api/auth/login")
+async def auth_login(body: EmailBody, response: Response):
+    return await _email_session(auth.login_email, body, response)
+
+
+async def _email_session(action, body: EmailBody, response: Response) -> dict:
+    args = (body.email, body.password) + ((body.name,) if action is auth.signup else ())
+    try:
+        user = await run_in_threadpool(action, *args)
+    except ValueError as e:  # taken email, weak password, or wrong credentials
+        raise HTTPException(400 if action is auth.signup else 401, str(e)) from e
+    except RuntimeError as e:  # database not configured
+        raise HTTPException(503, str(e)) from e
+    _cookie(response, auth.COOKIE, auth.sign(user["id"]), auth.SESSION_DAYS)
+    return user
+
+
+@app.post("/api/auth/logout")
+async def logout(request: Request, response: Response):
+    """End the session and erase its uploads — documents are never kept after sign-out."""
+    try:
+        await run_in_threadpool(purge, request.state.sid)
+    except Exception:
+        log.exception("could not purge %s on logout", request.state.sid)  # still sign them out
+    response.delete_cookie(auth.COOKIE, samesite="none" if CROSS_SITE else "lax", secure=CROSS_SITE)
+    return {"ok": True}
+
+
+@app.get("/api/me")
+async def me(request: Request):
+    """The signed-in user, or null. 200 either way — "not signed in" isn't an error."""
+    if not request.state.uid:
+        return {"user": None}
+    try:
+        return {"user": await run_in_threadpool(auth.user, request.state.uid)}
+    except RuntimeError:
+        return {"user": None}
+
+
+async def admin(request: Request) -> dict:
+    user = await signed_in(request)
+    if not user["is_admin"]:
+        raise HTTPException(403, "Admins only.")
+    return user
+
+
+@app.get("/api/admin/users")
+async def admin_users(request: Request):
+    await admin(request)
+    return {"users": await run_in_threadpool(auth.list_users)}
+
+
+class TokensBody(BaseModel):
+    tokens: int
+
+
+@app.post("/api/admin/users/{uid}/tokens")
+async def admin_set_tokens(request: Request, uid: int, body: TokensBody):
+    await admin(request)
+    user = await run_in_threadpool(auth.set_tokens, uid, body.tokens)
+    if not user:
+        raise HTTPException(404, "No such user.")
+    return user
 
 
 @app.post("/api/upload")
@@ -132,6 +289,7 @@ async def upload(
     base_url: str = Form(LLM_BASE_URL),
 ):
     """Index the uploads, extract their sheets, then stream the ingestion graph."""
+    user = await with_credits(request)
     sid = request.state.sid
     if len(files) > MAX_FILES:
         raise HTTPException(400, f"Please upload at most {MAX_FILES} files at a time.")
@@ -142,8 +300,10 @@ async def upload(
     blobs = [(os.path.basename(f.filename or "file"), await f.read()) for f in files]
 
     async def events():
+        usage = None
         try:
             llm, embeddings = resources(chat_key or "no-chat-key", base_url, model, embed_key)
+            llm, usage = metered(llm)
             store = docs_store(embeddings, sid)
             with tempfile.TemporaryDirectory() as td:
                 paths = []
@@ -218,6 +378,9 @@ async def upload(
                 "error",
                 {"message": "Couldn't read those documents — check the files and try again."},
             )
+        finally:
+            if usage:
+                await bill(user, usage)
 
     return EventSourceResponse(events())
 
@@ -242,11 +405,13 @@ class ChatBody(BaseModel):
 
 @app.post("/api/chat")
 async def chat(request: Request, body: ChatBody):
+    user = await with_credits(request)
     sid = request.state.sid
     chat_key, embed_key = _keys(body.key)
     if not chat_key:
         raise HTTPException(400, "Add an API key to chat about your documents.")
     llm, embeddings = resources(chat_key, body.baseUrl, body.model, embed_key)
+    llm, usage = metered(llm)
     try:
         ctx = {
             "vectorstore": docs_store(embeddings, sid),
@@ -261,11 +426,14 @@ async def chat(request: Request, body: ChatBody):
         raise HTTPException(503, str(e)) from e
 
     async def events():
+        # characters seen, so a gateway that reports no usage can still be billed
+        chars = len(body.question) + sum(len(str(m.get("content", ""))) for m in body.history)
         try:
             async for event in chat_stream(body.question, body.history, llm, ctx):
                 if isinstance(event, dict):
                     yield sse("status", event)
                 else:
+                    chars += len(event)
                     yield sse("token", {"text": event})
             yield sse("done", {})
         except AuthenticationError:
@@ -274,6 +442,8 @@ async def chat(request: Request, body: ChatBody):
         except Exception:
             log.exception("answer failed")
             yield sse("error", {"message": "Sorry, I hit a snag answering that — please try again."})
+        finally:
+            await bill(user, usage, chars)
 
     return EventSourceResponse(events())
 
@@ -284,6 +454,7 @@ PREVIEW_ROWS = 200  # ponytail: head-only preview; paginate if a sheet needs scr
 @app.get("/api/sheet")
 async def sheet(request: Request, name: str, limit: int = 50):
     """First rows of one extracted sheet, for the source preview panel."""
+    await signed_in(request)  # free (no model call), but still that user's own data
     df = await run_in_threadpool(load_frame, request.state.sid, name)
     if df is None:
         raise HTTPException(404, f"No sheet named '{name}' in this session.")
@@ -302,9 +473,10 @@ class ModelBody(BaseModel):
 
 
 @app.post("/api/model")
-async def model_status(body: ModelBody):
+async def model_status(request: Request, body: ModelBody):
     """Is the chat model itself reachable? A one-token probe — embeddings and the
     reranker are deliberately not consulted, so the indicator means what it says."""
+    await signed_in(request)  # one token; not worth billing, but not open to the world
     chat_key, embed_key = _keys(body.key)
     if not chat_key:
         return {"online": False, "reason": "No API key — add one in settings."}
@@ -330,10 +502,12 @@ class ChartBody(BaseModel):
 @app.post("/api/chart")
 async def chart(request: Request, body: ChartBody):
     """Natural-language chart request → a Vega-Lite spec with its data attached."""
+    user = await with_credits(request)
     chat_key, embed_key = _keys(body.key)
     if not chat_key:
         raise HTTPException(400, "Add an API key to generate charts.")
     llm, _ = resources(chat_key, body.baseUrl, body.model, embed_key)
+    llm, usage = metered(llm)
     try:
         return await run_in_threadpool(
             build_chart, request.state.sid, body.sheet, body.question, llm
@@ -347,6 +521,8 @@ async def chart(request: Request, body: ChartBody):
     except Exception as e:
         log.exception("chart failed")
         raise HTTPException(500, "Couldn't build that chart — try rephrasing it.") from e
+    finally:
+        await bill(user, usage, len(body.question))
 
 
 class FeedbackBody(BaseModel):

@@ -10,6 +10,21 @@ export type Config = {
   dbReady: boolean;
   maxFiles: number;
   suggestions: string[];
+  /** Empty when the server has no GOOGLE_CLIENT_ID — Google sign-in is then hidden. */
+  googleClientId: string;
+  freeTokens: number;
+  minPassword: number;
+};
+
+export type User = {
+  id: number;
+  email: string;
+  name: string;
+  tokens_left: number;
+  tokens_used: number;
+  is_admin: boolean;
+  created?: string;
+  last_seen?: string;
 };
 
 /** A Vega-Lite spec. Opaque here — vega-embed validates it at render time, and
@@ -89,6 +104,61 @@ async function detail(res: Response, fallback: string) {
 export async function getConfig(): Promise<Config> {
   const res = await fetch(`${API}/api/config`, { credentials: "include" });
   if (!res.ok) throw new Error("Could not reach the DocMagic API.");
+  return res.json();
+}
+
+/** The signed-in user, or null. Never throws for "not signed in". */
+export async function getMe(): Promise<User | null> {
+  const res = await fetch(`${API}/api/me`, { credentials: "include" });
+  if (!res.ok) return null;
+  return (await res.json()).user;
+}
+
+/** Exchange Google's ID token for a session cookie. */
+export async function googleLogin(credential: string): Promise<User> {
+  const res = await fetch(`${API}/api/auth/google`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ credential }),
+  });
+  if (!res.ok) throw new Error(await detail(res, "Sign-in failed."));
+  return res.json();
+}
+
+/** Email sign-in or sign-up — same shape, different path. */
+export async function emailAuth(
+  mode: "login" | "signup",
+  body: { email: string; password: string; name?: string },
+): Promise<User> {
+  const res = await fetch(`${API}/api/auth/${mode}`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await detail(res, "Sign-in failed."));
+  return res.json();
+}
+
+export async function logout() {
+  await fetch(`${API}/api/auth/logout`, { method: "POST", credentials: "include" });
+}
+
+export async function listUsers(): Promise<User[]> {
+  const res = await fetch(`${API}/api/admin/users`, { credentials: "include" });
+  if (!res.ok) throw new Error(await detail(res, "Could not load users."));
+  return (await res.json()).users;
+}
+
+export async function setUserTokens(id: number, tokens: number): Promise<User> {
+  const res = await fetch(`${API}/api/admin/users/${id}/tokens`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tokens }),
+  });
+  if (!res.ok) throw new Error(await detail(res, "Could not update credits."));
   return res.json();
 }
 

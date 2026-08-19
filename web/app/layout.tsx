@@ -34,10 +34,11 @@ export default function RootLayout({
       className={`${inter.variable} ${interTight.variable} ${mono.variable} h-full antialiased`}
     >
       <head>
-        {/* runs before paint, so the stored theme never flashes the wrong palette */}
+        {/* runs before paint, so the stored theme never flashes the wrong palette.
+            Light is the default: the OS preference does not decide, only the toggle does. */}
         <script
           dangerouslySetInnerHTML={{
-            __html: `document.documentElement.dataset.theme=localStorage.getItem("theme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light")`,
+            __html: `document.documentElement.dataset.theme=localStorage.getItem("theme")||"light"`,
           }}
         />
       </head>

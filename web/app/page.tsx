@@ -7,10 +7,12 @@ import DocPanel from "@/components/doc-panel";
 import Chat from "@/components/chat";
 import AnalysisView from "@/components/analysis-view";
 import ExportPdf from "@/components/export-pdf";
+import Login from "@/components/login";
 import {
   askChat,
   checkModel,
   getConfig,
+  getMe,
   sse,
   uploadFiles,
   INGEST_STEPS,
@@ -19,6 +21,7 @@ import {
   type IngestResult,
   type ModelStatus,
   type Msg,
+  type User,
 } from "@/lib/api";
 
 /** Endpoint + key survive a refresh but not the tab — sessionStorage, never localStorage:
@@ -33,6 +36,7 @@ function remember(key: string, set: (v: string) => void) {
 export default function Page() {
   const [config, setConfig] = useState<Config | null>(null);
   const [fatal, setFatal] = useState<string | null>(null);
+  const [user, setUser] = useState<User | null | undefined>(undefined); // undefined = checking
 
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState(""); // server-configured; no picker
@@ -59,11 +63,12 @@ export default function Page() {
         setApiKey(sessionStorage.getItem("apiKey") ?? "");
       })
       .catch((e) => setFatal(e.message));
+    getMe().then(setUser).catch(() => setUser(null));
   }, []);
 
   // probe the chat model itself; debounced so typing a key doesn't fire a call per keystroke
   useEffect(() => {
-    if (!model) return;
+    if (!model || !user) return; // the probe costs a model call, so it needs a session
     const ctl = new AbortController();
     const t = setTimeout(() => {
       setModelStatus(null); // back to "checking…" only once the debounce settles
@@ -75,7 +80,7 @@ export default function Page() {
       clearTimeout(t);
       ctl.abort();
     };
-  }, [model, baseUrl, apiKey]);
+  }, [model, baseUrl, apiKey, user]);
 
   async function analyse() {
     if (!config || files.length === 0) return;
@@ -110,6 +115,7 @@ export default function Page() {
     } finally {
       setUploading(false);
       setIngestStatus(null);
+      getMe().then(setUser); // the run just spent tokens — show the new balance
     }
   }
 
@@ -151,6 +157,7 @@ export default function Page() {
     } finally {
       setBusy(false);
       setStatus(null);
+      getMe().then(setUser);
       // drop the placeholder if nothing streamed back
       setMessages((m) =>
         m.length && m[m.length - 1].role === "assistant" && !m[m.length - 1].content
@@ -172,13 +179,15 @@ export default function Page() {
     );
   }
 
-  if (!config) {
+  if (!config || user === undefined) {
     return (
       <main className="grid min-h-dvh place-items-center">
         <span className="meta pulse text-muted">loading…</span>
       </main>
     );
   }
+
+  if (!user) return <Login config={config} onSignedIn={setUser} />;
 
   return (
     <div className="min-h-dvh">
@@ -189,6 +198,15 @@ export default function Page() {
         baseUrl={baseUrl}
         setBaseUrl={remember("baseUrl", setBaseUrl)}
         modelStatus={modelStatus}
+        user={user}
+        onSignedOut={() => {
+          // the server just purged the uploads — don't leave their results on screen
+          setUser(null);
+          setIngest(null);
+          setMessages([]);
+          setFiles([]);
+          setHasDocs(false);
+        }}
       />
 
       {/* headline row — eyebrow + title left, live status + primary action right */}

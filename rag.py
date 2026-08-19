@@ -89,7 +89,16 @@ def resources(llm_key: str, llm_base_url: str, llm_model: str, embed_key: str):
         kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
     if "kimi" not in llm_model:
         kwargs["temperature"] = 0.2  # kimi-k3 fixes temperature=1.0 and rejects overrides
-    llm = ChatOpenAI(base_url=llm_base_url, api_key=llm_key, model=llm_model, **kwargs)
+    # stream_usage sends stream_options.include_usage so token credits can be billed on
+    # streamed turns; STREAM_USAGE=0 for a gateway that rejects the parameter (auth.charged
+    # then falls back to estimating)
+    llm = ChatOpenAI(
+        base_url=llm_base_url,
+        api_key=llm_key,
+        model=llm_model,
+        stream_usage=os.getenv("STREAM_USAGE", "1") != "0",
+        **kwargs,
+    )
     # embed_documents() sends input_type=passage, embed_query() sends query
     embeddings = NVIDIAEmbeddings(
         base_url=EMBED_BASE_URL, model=EMBED_MODEL, api_key=embed_key, truncate="END"
@@ -130,8 +139,9 @@ def engine():
     """SQLAlchemy engine, with the app's own schema created on first use.
 
     `analytics` holds the sheets extracted from uploads (what the data specialist
-    queries and promptable Vega-Lite charts) plus the feedback log. pgvector manages
-    its own tables separately.
+    queries and promptable Vega-Lite charts), the feedback log, and the user
+    accounts with their token credits (see auth.py). pgvector manages its own
+    tables separately.
     """
     if not POSTGRES_URL:
         raise RuntimeError("POSTGRES_URL is required - set it in .env (see .env.example)")
@@ -153,6 +163,19 @@ def engine():
                 "rating text, model text, question text, answer text)"
             )
         )
+        c.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS analytics.users ("
+                "id bigserial PRIMARY KEY, email text UNIQUE NOT NULL, name text, "
+                "pw_hash text, tokens_left bigint NOT NULL DEFAULT 0, "
+                "tokens_used bigint NOT NULL DEFAULT 0, is_admin boolean NOT NULL DEFAULT false, "
+                "created timestamptz DEFAULT now(), last_seen timestamptz DEFAULT now())"
+            )
+        )
+        # pw_hash arrived after email sign-in did; NULL means "Google account"
+        c.execute(text("ALTER TABLE analytics.users ADD COLUMN IF NOT EXISTS pw_hash text"))
+        # we briefly stored the Google avatar URL and nothing needs it — initials do
+        c.execute(text("ALTER TABLE analytics.users DROP COLUMN IF EXISTS picture"))
     return eng
 
 
@@ -213,6 +236,18 @@ def reset_uploads(sid: str) -> None:
         for t in tables:  # names are our own md5 hex, never user input — safe to interpolate
             c.execute(text(f'DROP TABLE IF EXISTS analytics."{t}"'))
         c.execute(text("DELETE FROM analytics.uploads WHERE sid = :sid"), {"sid": sid})
+
+
+def purge(sid: str) -> None:
+    """Erase everything a session uploaded — vectors and extracted tables.
+
+    Documents are working data, not account data: they live only as long as the
+    session that uploaded them (see api.py's logout).
+    """
+    _, embeddings = default_resources()
+    docs_store(embeddings, sid).delete_collection()
+    reset_uploads(sid)
+    log.info("purged session %s", sid)
 
 
 def sheet_names(sid: str) -> list[str]:

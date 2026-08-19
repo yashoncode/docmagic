@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import tempfile
+import time
 
 from langchain_core.documents import Document
 from openpyxl import Workbook
@@ -284,15 +285,62 @@ def test_api_wiring():
         # a malformed body is a validation error, not a 500
         assert client.post("/api/chat", json={}).status_code == 422
 
-        # with no key anywhere, chat must be a clean 400 — patched, so the result
-        # doesn't depend on whether the developer's .env happens to have a key
-        saved = api.LLM_API_KEY
-        api.LLM_API_KEY = ""
+        # every model endpoint needs a session; anonymous is 401, not 500 and not free
+        assert client.get("/api/me").json() == {"user": None}
+        for path, body in [
+            ("/api/chat", {"question": "hi"}),
+            ("/api/chart", {"sheet": "Rates", "question": "bar chart"}),
+            ("/api/model", {}),
+        ]:
+            r = client.post(path, json=body)
+            assert r.status_code == 401, f"{path} must be 401 when signed out, got {r.status_code}"
+        assert client.get("/api/admin/users").status_code == 401
+
+        # email sign-up validates before it ever reaches the database
+        for bad in [{"email": "a@b.com", "password": "short"}, {"email": "nope", "password": "x" * 12}]:
+            assert client.post("/api/auth/signup", json=bad).status_code == 400, bad
+
+
+def test_auth_session():
+    """A session cookie must only be accepted if we signed it, and credits must add up."""
+    import auth
+
+    assert auth.parse(auth.sign(7)) == 7
+    assert auth.parse("") is None
+    assert auth.parse("7.9999999999.deadbeef") is None  # right shape, wrong signature
+    tampered = auth.sign(7).split(".")
+    assert auth.parse(f"8.{tampered[1]}.{tampered[2]}") is None  # swapped user id
+    assert auth.parse(f"7.{int(time.time()) - 1}.{tampered[2]}") is None  # expired
+
+    class Handler:  # what UsageMetadataCallbackHandler exposes after a run
+        def __init__(self, usage):
+            self.usage_metadata = usage
+
+    assert auth.charged(Handler({"m": {"total_tokens": 1234}}), 4000) == 1234  # reported wins
+    assert auth.charged(Handler({}), 4000) == 1200  # gateway sent no usage → estimate
+    assert auth.charged(Handler(None), 0) == 200
+
+
+def test_password_hashing():
+    """Passwords must never round-trip, and every malformed hash must simply fail."""
+    import auth
+
+    stored = auth.hash_password("correct horse battery")
+    assert "correct horse battery" not in stored and stored.startswith("scrypt$")
+    assert auth.check_password("correct horse battery", stored)
+    assert not auth.check_password("Correct horse battery", stored)  # case matters
+    assert not auth.check_password("", stored)
+    assert auth.hash_password("same") != auth.hash_password("same")  # salted per account
+    for junk in ["", "not-a-hash", "scrypt$bad$8$1$ab$cd", "md5$1$1$1$ab$cd"]:
+        assert not auth.check_password("anything", junk), junk
+
+    for bad in ["nope", "a@b", "@example.com", "a@" + "x" * 300]:
         try:
-            r = client.post("/api/chat", json={"question": "hi"})
-            assert r.status_code == 400, f"expected 400 without a key, got {r.status_code}"
-        finally:
-            api.LLM_API_KEY = saved
+            auth._clean_email(bad)
+            raise AssertionError(f"{bad!r} should be rejected")
+        except ValueError:
+            pass
+    assert auth._clean_email("  Yash@Example.COM ") == "yash@example.com"
 
 
 if __name__ == "__main__":
@@ -308,4 +356,5 @@ if __name__ == "__main__":
     test_progress_stream()
     test_chart_spec_sanitized()
     test_api_wiring()
+    test_auth_session()
     print("ok")
