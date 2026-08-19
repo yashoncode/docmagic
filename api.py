@@ -493,7 +493,9 @@ async def model_status(request: Request, body: ModelBody):
         return {"online": False, "reason": "The API key was rejected."}
     except Exception as e:
         log.warning("model probe failed | model=%s | %s", body.model, e)
-        return {"online": False, "reason": "The model didn't respond."}
+        # the provider's own words, truncated — a generic "didn't respond" costs an hour
+        # of guessing every time a model id or base URL is wrong on a host you can't shell into
+        return {"online": False, "reason": f"{type(e).__name__}: {str(e)[:160]}"}
 
 
 class ChartBody(BaseModel):
