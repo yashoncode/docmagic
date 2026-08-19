@@ -213,7 +213,8 @@ export async function checkModel(
     body: JSON.stringify(body),
     signal,
   });
-  if (!res.ok) return { online: false, reason: "Couldn't reach the API." };
+  // the status is the whole diagnosis — 401 is a dead session, 5xx is the API itself
+  if (!res.ok) return { online: false, reason: `The API answered ${res.status}.` };
   return res.json();
 }
 

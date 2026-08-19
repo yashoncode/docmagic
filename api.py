@@ -483,8 +483,10 @@ async def model_status(request: Request, body: ModelBody):
     chat_key, embed_key = _keys(body.key)
     if not chat_key:
         return {"online": False, "reason": "No API key — add one in settings."}
-    llm, _ = resources(chat_key, body.baseUrl, body.model, embed_key)
     try:
+        # inside the try: building the clients can raise too (bad base URL, embed model
+        # refused), and a 500 here reads as "the whole API is down" instead of "model off"
+        llm, _ = resources(chat_key, body.baseUrl, body.model, embed_key)
         await llm.ainvoke("ping", max_tokens=1)
         return {"online": True, "reason": ""}
     except AuthenticationError:
