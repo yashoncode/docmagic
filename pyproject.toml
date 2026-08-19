@@ -1,4 +1,0 @@
-# Vercel's Python runtime looks for app.py/index.py/main.py; ours is api.py, so point at it.
-# Dependencies stay in requirements.txt — Vercel reads either.
-[tool.vercel]
-entrypoint = "api:app"
