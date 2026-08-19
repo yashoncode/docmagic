@@ -68,7 +68,10 @@ SUGGESTIONS = [
 
 # cross-site cookies need SameSite=None + Secure; localhost dev wants plain Lax
 CROSS_SITE = os.getenv("COOKIE_CROSS_SITE", "") == "1"
-WEB_ORIGIN = os.getenv("WEB_ORIGIN", "http://localhost:3000")
+# rstrip: an origin is scheme+host+port and never ends in "/", but pasting a browser URL
+# into the host's env panel does — and Starlette compares the string exactly, so the
+# stray slash rejects every real request with "Disallowed CORS origin"
+WEB_ORIGIN = os.getenv("WEB_ORIGIN", "http://localhost:3000").rstrip("/")
 
 # warn rather than raise: the suite boots the app without a database, and the first
 # real request fails loudly anyway
