@@ -7,6 +7,7 @@ agent/ingestion graphs all import from here.
 import ast
 import io
 import logging
+import math
 import operator
 import os
 from functools import lru_cache
@@ -54,8 +55,10 @@ OCR_MIN_CHARS = 60
 OCR_MAX_PAGES = 15  # ceiling on vision calls per scanned file
 
 SYSTEM_PROMPT = (
-    "You are XEON AI, a friendly expert on logistics, warehousing, ERP and CRM "
-    "documents (SOPs, rate cards, contracts, manuals). Talk like a helpful "
+    "You are XEON AI, a document analyst for logistics, warehousing, ERP and CRM "
+    "paperwork (SOPs, rate cards, contracts, invoices, manuals). You are not a source "
+    "of domain knowledge on your own — everything you assert comes from the documents "
+    "or a tool. Talk like a helpful "
     "colleague: warm, plain language, short sentences — never stiff or robotic. "
     "For questions about the documents, answer ONLY from the provided context and "
     "cite the source like [file.pdf p.3] or [file.xlsx Rates] (sheet name for "
@@ -132,6 +135,47 @@ def safe_calc(expression: str) -> float:
         raise ValueError("unsupported expression")
 
     return _eval(ast.parse(expression, mode="eval").body)
+
+
+def reconcile(lines: list[dict], tolerance: float = 0.01) -> dict:
+    """Check billed lines against contracted rates: rate x quantity must equal the amount charged.
+
+    The one arithmetic invariant under every rate card and invoice. The model extracts the
+    numbers from the documents (what it is good at); this decides what matches (what it is
+    not), so a mismatch cannot be smoothed over in prose. Tolerance is in currency units.
+    """
+    out, variance = [], 0.0
+    for i, line in enumerate(lines):
+        try:
+            rate, qty = float(line["rate"]), float(line["qty"])
+            charged = float(line["charged"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(f"line {i + 1} needs numeric 'rate', 'qty' and 'charged'")
+        # json.loads accepts NaN/Infinity; those compare false against the tolerance and
+        # would be reported as a confident mismatch
+        if not all(map(math.isfinite, (rate, qty, charged))):
+            raise ValueError(f"line {i + 1} has a non-finite value")
+        expected = round(rate * qty, 2)
+        delta = round(charged - expected, 2)
+        variance += delta
+        out.append(
+            {
+                "item": str(line.get("item") or f"line {i + 1}"),
+                "rate": rate,
+                "qty": qty,
+                "expected": expected,
+                "charged": round(charged, 2),
+                "delta": delta,
+                "status": "ok"
+                if abs(delta) <= tolerance
+                else ("overcharged" if delta > 0 else "undercharged"),
+            }
+        )
+    return {
+        "lines": out,
+        "variance": round(variance, 2),
+        "mismatches": sum(1 for r in out if r["status"] != "ok"),
+    }
 
 
 @lru_cache(maxsize=1)

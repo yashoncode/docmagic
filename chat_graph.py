@@ -3,7 +3,7 @@
 Specialists differ by the TOOLS they hold, not by persona:
     documents → search_documents         (RAG over the uploaded files)
     data      → describe_table, calculate (computed stats over Excel sheets)
-    quant     → calculate, search_documents (fetch numbers, then do the math)
+    quant     → calculate, search_documents, reconcile_invoice (numbers, then the math)
     web       → search_web                (Tavily, only offered when a key is set)
 
 route() classifies the turn (with an arithmetic fast-path), then the chosen specialist —
@@ -16,6 +16,7 @@ tool call. Labels and icons are the frontend's job; this layer emits names only.
 """
 
 import asyncio
+import json
 import re
 from operator import itemgetter
 
@@ -30,6 +31,7 @@ from rag import (
     format_docs,
     load_frame,
     log,
+    reconcile,
     retrieve_docs,
     safe_calc,
     sheet_names,
@@ -45,7 +47,10 @@ LANE_PROMPTS = {
     + " Answer from live web results: call search_web and cite sources by domain.",
     "quant": AGENT_PROMPT
     + " This turn needs calculation. Fetch the numbers with search_documents first, then use "
-    "calculate for EVERY arithmetic step — never do math in your head. Show the working.",
+    "calculate for EVERY arithmetic step — never do math in your head. Show the working. "
+    "If the user is checking a bill, invoice or charge against agreed/contracted rates, "
+    "pull each line's rate, quantity and charged amount from the documents and call "
+    "reconcile_invoice — report its verdict as given, never overrule it.",
     "data": SYSTEM_PROMPT
     + " The user is asking about spreadsheet data. Use describe_table for real computed stats "
     "on the named sheet, and calculate for any further arithmetic. Cite the sheet name.",
@@ -58,7 +63,8 @@ ROUTER_PROMPT = ChatPromptTemplate.from_messages(
             "Route the user's message to ONE specialist. Reply with ONLY the label, nothing else.\n"
             "documents — about the user's uploaded files (PDFs, contracts, SOPs, rate cards)\n"
             "data — totals, averages, max/min, counts or trends over uploaded spreadsheet columns\n"
-            "quant — arithmetic, rates, GST, percentages, multi-number math\n"
+            "quant — arithmetic, rates, GST, percentages, multi-number math, or checking an "
+            "invoice/bill against a rate card or contracted rate\n"
             "web — general knowledge or current/external information\n"
             "Available labels: {labels}. If unsure, pick documents.",
         ),
@@ -101,6 +107,27 @@ def _build_tools(lane: str, ctx: dict) -> list:
             return f"Couldn't evaluate '{expression}' — use plain arithmetic like 500*12*0.18."
 
     @tool
+    def reconcile_invoice(lines: str) -> str:
+        """Check billed amounts against contracted rates. Fetch the rate-card rate AND the
+        invoiced amount with search_documents first, then pass a JSON list:
+        [{"item": "Chennai haulage", "rate": 1200, "qty": 3, "charged": 3800}]."""
+        try:
+            result = reconcile(json.loads(lines))
+        except json.JSONDecodeError:
+            return 'Pass a JSON list like [{"item": "...", "rate": 0, "qty": 0, "charged": 0}].'
+        except ValueError as e:
+            return f"Couldn't reconcile: {e}"
+        if not result["lines"]:
+            return "No lines to reconcile — extract the rate, quantity and charged amount first."
+        rows = "\n".join(
+            f"{r['item']}: {r['rate']} x {r['qty']} = {r['expected']} expected, "
+            f"{r['charged']} charged, delta {r['delta']:+} ({r['status']})"
+            for r in result["lines"]
+        )
+        step("composing")
+        return f"{rows}\n\n{result['mismatches']} mismatch(es), net variance {result['variance']:+}"
+
+    @tool
     def search_web(query: str) -> str:
         """Search the web for general knowledge, logistics concepts or current info."""
         docs = web_documents(query, tavily_key)
@@ -126,7 +153,7 @@ def _build_tools(lane: str, ctx: dict) -> list:
     lane_tools = {
         "documents": [search_documents],
         "web": [search_web] if tavily_key else [search_documents],
-        "quant": [calculate, search_documents],
+        "quant": [calculate, search_documents, reconcile_invoice],
         "data": [describe_table, calculate],
     }
     return lane_tools[lane]

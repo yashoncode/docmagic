@@ -9,7 +9,7 @@ import time
 from langchain_core.documents import Document
 from openpyxl import Workbook
 
-from rag import _fuse, _table_name, load_units, splitter
+from rag import _fuse, _table_name, load_units, reconcile, splitter
 
 
 def test_splitting():
@@ -40,6 +40,39 @@ def test_excel_loader():
         assert docs[0].metadata == {"source": os.path.basename(path), "loc": "Rates"}
     finally:
         os.remove(path)
+
+
+def test_reconcile():
+    """Billing invariant: rate x qty vs charged. A wrong verdict here is a wrong invoice."""
+    result = reconcile(
+        [
+            {"item": "Chennai haulage", "rate": 1200, "qty": 3, "charged": 3600},  # ok
+            {"item": "Storage", "rate": 45.5, "qty": 100, "charged": 4800},  # over by 250
+            {"item": "Handling", "rate": 20, "qty": 10, "charged": 180},  # under by 20
+            {"item": "Rounding", "rate": 33.333, "qty": 3, "charged": 100},  # 99.999 -> within 0.01
+        ]
+    )
+    assert [r["status"] for r in result["lines"]] == [
+        "ok",
+        "overcharged",
+        "undercharged",
+        "ok",
+    ]
+    assert result["lines"][1]["expected"] == 4550 and result["lines"][1]["delta"] == 250
+    assert result["mismatches"] == 2
+    assert result["variance"] == 230  # +250 - 20 + 0 + 0
+    # unnamed lines still get a label, and empty input is not an error
+    assert reconcile([{"rate": 1, "qty": 1, "charged": 1}])["lines"][0]["item"] == "line 1"
+    assert reconcile([]) == {"lines": [], "variance": 0.0, "mismatches": 0}
+    # the model supplies these fields — junk must raise, never silently score as a match
+    bad_lines = [{"rate": 1, "qty": 1}, {"rate": "n/a", "qty": 1, "charged": 1}]
+    bad_lines += json.loads('[{"rate": NaN, "qty": 1, "charged": 1}]')  # json.loads allows NaN
+    for bad in bad_lines:
+        try:
+            reconcile([bad])
+            raise AssertionError(f"{bad!r} should be rejected")
+        except ValueError:
+            pass
 
 
 def test_header_detection():
@@ -346,6 +379,7 @@ def test_password_hashing():
 if __name__ == "__main__":
     test_splitting()
     test_excel_loader()
+    test_reconcile()
     test_header_detection()
     test_hybrid_fuse()
     test_reset_store()

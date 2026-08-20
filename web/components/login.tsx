@@ -8,6 +8,7 @@ import {
   FileSpreadsheet,
   Loader2,
   MessageSquareQuote,
+  Scale,
   Sparkles,
 } from "lucide-react";
 import { ThemeToggle } from "@/components/topbar";
@@ -50,7 +51,12 @@ const PERKS = [
   {
     icon: MessageSquareQuote,
     title: "Answers you can check",
-    text: "Every reply cites the page or sheet it came from, so nothing is taken on trust.",
+    text: "Replies cite the page or sheet they came from, so nothing is taken on trust.",
+  },
+  {
+    icon: Scale,
+    title: "Billing that adds up",
+    text: "Check a bill against the agreed rates — rate x quantity is computed, not guessed.",
   },
   {
     icon: BarChart3,
